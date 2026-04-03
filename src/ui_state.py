@@ -77,9 +77,10 @@ def save_session_snapshot(
         return
 
     excluded_keys = {"_snapshot_restored"} | set(non_assignable_widget_keys)
+    transient_prefixes = ("_export_cache_",)
     snapshot: dict[str, Any] = {}
     for key, value in session_state.items():
-        if key in excluded_keys:
+        if key in excluded_keys or key.startswith(transient_prefixes):
             continue
         try:
             pickle.dumps(value)
@@ -113,6 +114,8 @@ def init_session_state(
     """Initialize required session-state keys once."""
     if "language" not in session_state:
         session_state["language"] = "de"
+    if "app_mode" not in session_state:
+        session_state["app_mode"] = "normal"
     if "remember_settings" not in session_state:
         session_state["remember_settings"] = True
     if "table_df" not in session_state:

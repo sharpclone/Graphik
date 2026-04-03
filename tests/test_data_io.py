@@ -7,7 +7,7 @@ from io import BytesIO
 import pandas as pd
 import pytest
 
-from src.data_io import load_table_file, prepare_measurement_data, sanitize_dataframe
+from src.data_io import get_statistics_sample_dataframe, load_table_file, prepare_measurement_data, sanitize_dataframe
 
 
 def test_load_table_file_csv() -> None:
@@ -125,3 +125,11 @@ def test_prepare_measurement_data_trims_leading_non_data_rows() -> None:
 
     assert prepared.dataframe.shape == (2, 3)
     assert prepared.dataframe["x"].tolist() == [50.0, 100.0]
+
+
+def test_get_statistics_sample_dataframe_has_numeric_measurements() -> None:
+    df = get_statistics_sample_dataframe()
+
+    assert list(df.columns) == ["measurement"]
+    assert df.shape[0] >= 10
+    assert pd.api.types.is_numeric_dtype(df["measurement"])

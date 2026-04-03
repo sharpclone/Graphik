@@ -3,12 +3,22 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
 import pandas as pd
 
 
 APP_TITLE = "Graphik"
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def runtime_root() -> Path:
+    """Return the project root for source runs and bundled executables."""
+    if hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS)
+    return Path(__file__).resolve().parent.parent
+
+
+PROJECT_ROOT = runtime_root()
 PRESENT_DIR = PROJECT_ROOT / "Present"
 LOGO_WHITE_PATH = PRESENT_DIR / "logo-white.png"
 LOGO_DARKBLUE_PATH = PRESENT_DIR / "logo-darkblue.png"

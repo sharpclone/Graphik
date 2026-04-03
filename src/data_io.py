@@ -24,12 +24,42 @@ class PreparedData:
 
 
 def get_sample_dataframe() -> pd.DataFrame:
-    """Return default sample dataset used by the app."""
+    """Return default sample dataset for the normal plotting mode."""
     return pd.DataFrame(
         {
             "m": [50, 100, 150, 200, 250],
             "y": [0.8464, 1.4641, 2.1609, 2.7556, 3.4969],
             "sigma_y": [0.01288, 0.0242, 0.01764, 0.0332, 0.0374],
+        }
+    )
+
+
+def get_statistics_sample_dataframe() -> pd.DataFrame:
+    """Return sample data for testing the statistics mode."""
+    return pd.DataFrame(
+        {
+            "measurement": [
+                9.81,
+                10.02,
+                9.74,
+                10.15,
+                9.95,
+                10.08,
+                9.88,
+                9.67,
+                10.21,
+                9.92,
+                10.05,
+                9.99,
+                9.83,
+                10.11,
+                9.77,
+                9.90,
+                10.18,
+                9.86,
+                10.07,
+                9.94,
+            ]
         }
     )
 

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
+import re
 import textwrap
 
 import numpy as np
@@ -16,12 +18,42 @@ from .i18n import translate
 PLOT_INFO_ANNOTATION_NAME = "_plot_info_block"
 
 
-def add_plot_text_block(fig: go.Figure, lines: list[str], font_size: int = 12) -> None:
+@dataclass(frozen=True)
+class PlotTextBlockLayout:
+    """Layout options for the plot info/equation box."""
+
+    manual: bool = False
+    x: float | None = None
+    y: float | None = None
+    max_width: float | None = None
+    max_height: float | None = None
+
+
+def scaled_text_font_size_for_export(
+    requested_font_size: int | float,
+    preview_base_font_size: int | float | None,
+    export_base_font_size: int | float | None,
+) -> int:
+    """Scale a manually chosen plot-text font size proportionally for export."""
+    requested = max(1.0, float(requested_font_size))
+    preview_base = max(1.0, float(preview_base_font_size if preview_base_font_size is not None else requested))
+    export_base = max(1.0, float(export_base_font_size if export_base_font_size is not None else preview_base))
+    scale_factor = export_base / preview_base
+    return int(round(max(1.0, requested * scale_factor)))
+
+
+def add_plot_text_block(
+    fig: go.Figure,
+    lines: list[str],
+    font_size: int = 12,
+    layout: PlotTextBlockLayout | None = None,
+) -> None:
     """Add equation block inside plot area, auto-placed in a low-overlap zone."""
     if not lines:
         return
 
     raw_lines = [str(line).strip() for line in lines if str(line).strip()]
+    layout = layout or PlotTextBlockLayout()
     if not raw_lines:
         return
 
@@ -196,6 +228,40 @@ def add_plot_text_block(fig: go.Figure, lines: list[str], font_size: int = 12) -
                         if -0.05 <= xn <= 1.05 and -0.05 <= yn <= 1.05:
                             points.append((xn, yn))
 
+            if str(getattr(trace, "type", "")).lower() == "bar" and xn_valid.size >= 1:
+                width_attr = getattr(trace, "width", None)
+                widths = _array_to_length(width_attr, xn_valid.size, fill_value=np.nan)
+                finite_widths = widths[np.isfinite(widths) & (widths > 0)]
+                if finite_widths.size == 0:
+                    if xn_valid.size >= 2:
+                        approx_width = float(np.min(np.diff(np.sort(xn_valid)))) * 0.85
+                    else:
+                        approx_width = 0.08
+                    widths = np.full(xn_valid.size, max(approx_width, 0.04), dtype=float)
+                else:
+                    widths = np.where(np.isfinite(widths) & (widths > 0), widths, float(np.median(finite_widths)))
+
+                for idx_bar, (x_bar, y_bar) in enumerate(zip(x_vals[: xn_valid.size], y_vals[: xn_valid.size], strict=True)):
+                    if not np.isfinite(x_bar) or not np.isfinite(y_bar):
+                        continue
+                    if y_is_log and y_bar <= 0:
+                        continue
+                    half_width = float(widths[idx_bar]) / 2.0
+                    x_samples = np.linspace(float(x_bar) - half_width, float(x_bar) + half_width, 5)
+                    if y_is_log:
+                        y_bottom = max(y_min, np.finfo(float).eps)
+                        y_samples = np.geomspace(y_bottom, float(y_bar), 5) if float(y_bar) > y_bottom else np.array([float(y_bar)])
+                        y_norm_bar = (np.log10(y_samples) - y_min_log) / y_span_log
+                    else:
+                        y_bottom = max(0.0, y_min)
+                        y_samples = np.linspace(y_bottom, float(y_bar), 5)
+                        y_norm_bar = (y_samples - y_min) / y_span
+                    x_norm_bar = (x_samples - x_min) / x_span
+                    for xn_bar in x_norm_bar:
+                        for yn_bar in y_norm_bar:
+                            if np.isfinite(xn_bar) and np.isfinite(yn_bar) and -0.05 <= xn_bar <= 1.05 and -0.05 <= yn_bar <= 1.05:
+                                points.append((float(xn_bar), float(yn_bar)))
+
             err = getattr(trace, "error_y", None)
             if err is None or not bool(getattr(err, "visible", False)):
                 continue
@@ -231,13 +297,15 @@ def add_plot_text_block(fig: go.Figure, lines: list[str], font_size: int = 12) -
 
         return points
 
-    effective_font_size = float(max(10, int(font_size)))
-    max_box_w = 0.92
-    max_box_h = 0.86
+    effective_font_size = float(max(1.0, float(font_size)))
+    base_max_box_w = float(layout.max_width) if layout.max_width is not None else (0.48 if fig.layout.width is None else 0.46)
+    base_max_box_h = float(layout.max_height) if layout.max_height is not None else (0.27 if fig.layout.width is None else 0.28)
+    max_box_w = float(np.clip(base_max_box_w, 0.12, 0.95))
+    max_box_h = float(np.clip(base_max_box_h, 0.08, 0.95))
 
     margin_obj = fig.layout.margin.to_plotly_json() if fig.layout.margin is not None else {}
-    fig_w_px = float(fig.layout.width) if fig.layout.width is not None else 1200.0
-    fig_h_px = float(fig.layout.height) if fig.layout.height is not None else 700.0
+    fig_w_px = float(fig.layout.width) if fig.layout.width is not None else 980.0
+    fig_h_px = float(fig.layout.height) if fig.layout.height is not None else 620.0
     margin_l = float(margin_obj.get("l", 60))
     margin_r = float(margin_obj.get("r", 30))
     margin_t = float(margin_obj.get("t", 60))
@@ -245,12 +313,17 @@ def add_plot_text_block(fig: go.Figure, lines: list[str], font_size: int = 12) -
     plot_w_px = max(220.0, fig_w_px - margin_l - margin_r)
     plot_h_px = max(180.0, fig_h_px - margin_t - margin_b)
 
+    def _strip_html_for_estimation(text_value: str) -> str:
+        """Approximate rendered text length by ignoring HTML tags used by Plotly."""
+        return re.sub(r"<[^>]+>", "", str(text_value))
+
     def _estimate_box_size(lines_for_box: list[str], current_font_size: float) -> tuple[float, float]:
-        max_line_len = max(len(line) for line in lines_for_box) if lines_for_box else 20
-        line_h_px = max(10.0, 1.20 * float(current_font_size))
-        char_w_px = max(4.0, 0.52 * float(current_font_size))
-        est_w_px = max(90.0, 18.0 + char_w_px * float(max_line_len))
-        est_h_px = max(40.0, 12.0 + line_h_px * float(len(lines_for_box)))
+        clean_lines = [_strip_html_for_estimation(line) for line in lines_for_box]
+        max_line_len = max(len(line) for line in clean_lines) if clean_lines else 20
+        line_h_px = max(10.0, 1.26 * float(current_font_size))
+        char_w_px = max(4.2, 0.58 * float(current_font_size))
+        est_w_px = max(110.0, 22.0 + char_w_px * float(max_line_len))
+        est_h_px = max(46.0, 16.0 + line_h_px * float(len(clean_lines)))
         return (est_w_px / plot_w_px, est_h_px / plot_h_px)
 
     def _preferred_wrap_width(current_font_size: float) -> int:
@@ -288,8 +361,8 @@ def add_plot_text_block(fig: go.Figure, lines: list[str], font_size: int = 12) -
             display_lines = list(raw_lines)
         box_w, box_h = _estimate_box_size(display_lines, effective_font_size)
 
-    soft_min_font_size = max(11.0, float(font_size) * 0.90)
-    hard_min_font_size = max(10.0, float(font_size) * 0.78)
+    soft_min_font_size = max(9.0, float(font_size) * 0.82)
+    hard_min_font_size = max(7.5, float(font_size) * 0.64)
     for _ in range(10):
         if box_w <= max_box_w and box_h <= max_box_h:
             break
@@ -318,38 +391,26 @@ def add_plot_text_block(fig: go.Figure, lines: list[str], font_size: int = 12) -
             display_lines = list(raw_lines)
         box_w, box_h = _estimate_box_size(display_lines, effective_font_size)
 
-    max_grow_font = max(float(font_size), float(font_size) * 1.35)
-    for _ in range(14):
-        if box_w >= (0.78 * max_box_w) or box_h >= (0.78 * max_box_h):
-            break
-        next_font_size = min(max_grow_font, effective_font_size * 1.06)
-        if next_font_size <= effective_font_size + 1e-9:
-            break
-        candidate_wrap = _preferred_wrap_width(next_font_size)
-        if any(len(line) > candidate_wrap for line in raw_lines):
-            candidate_lines = _wrap_lines(raw_lines, candidate_wrap)
-        else:
-            candidate_lines = list(raw_lines)
-        cand_w, cand_h = _estimate_box_size(candidate_lines, next_font_size)
-        if cand_w > max_box_w or cand_h > max_box_h:
-            break
-        effective_font_size = next_font_size
-        wrap_width = candidate_wrap
-        display_lines = candidate_lines
-        box_w, box_h = cand_w, cand_h
-
     box_w = float(min(box_w, max_box_w))
     box_h = float(min(box_h, max_box_h))
 
     bounds = _extract_axis_bounds()
     x_pos = 0.02
     y_pos = 0.98
-    if bounds is not None:
+    x_margin = 0.02
+    y_margin = 0.03
+    if layout.manual:
+        x_left_max = max(x_margin, 1.0 - x_margin - box_w)
+        y_top_min = box_h + y_margin
+        y_top_max = 1.0 - y_margin
+        manual_x = x_margin if layout.x is None else float(layout.x)
+        manual_y = y_top_max if layout.y is None else float(layout.y)
+        x_pos = float(np.clip(manual_x, x_margin, x_left_max))
+        y_pos = float(np.clip(manual_y, y_top_min, y_top_max))
+    elif bounds is not None:
         x_min, x_max, y_min, y_max, y_is_log = bounds
         points = _collect_normalized_points(x_min, x_max, y_min, y_max, y_is_log)
 
-        x_margin = 0.02
-        y_margin = 0.03
         # Reserve extra space above the bottom axis so the box stays clear
         # in smaller responsive previews where wrapped text makes it visually taller.
         bottom_axis_clearance = float(np.clip(0.055 + (0.18 * box_h), 0.08, 0.18))
@@ -404,8 +465,6 @@ def add_plot_text_block(fig: go.Figure, lines: list[str], font_size: int = 12) -
                 if dist < min_dist:
                     min_dist = dist
             bottom_penalty = max(0.0, (bottom_axis_clearance + y_margin) - bottom)
-            # Prefer lower overlap first, then greater distance from data,
-            # then more clearance from the bottom/x-axis, then higher positions.
             return (
                 float(overlap_count),
                 float(-min_dist),
@@ -414,6 +473,39 @@ def add_plot_text_block(fig: go.Figure, lines: list[str], font_size: int = 12) -
             )
 
         best = min(candidates, key=_candidate_key)
+        best_overlap = _candidate_key(best)[0]
+
+        shrink_rounds = 0
+        while best_overlap > 0 and shrink_rounds < 6 and effective_font_size > hard_min_font_size + 0.2:
+            shrink_rounds += 1
+            effective_font_size = max(hard_min_font_size, effective_font_size * 0.90)
+            wrap_width = _preferred_wrap_width(effective_font_size)
+            display_lines = _wrap_lines(raw_lines, wrap_width) if any(len(line) > wrap_width for line in raw_lines) else list(raw_lines)
+            box_w, box_h = _estimate_box_size(display_lines, effective_font_size)
+            box_w = float(min(box_w, max_box_w))
+            box_h = float(min(box_h, max_box_h))
+
+            x_left_max = max(x_margin, 1.0 - x_margin - box_w)
+            y_top_min = box_h + y_margin + bottom_axis_clearance
+            y_top_max = 1.0 - y_margin
+            x_positions = np.linspace(x_margin, x_left_max, x_grid_count).tolist()
+            y_positions = np.linspace(y_top_max, y_top_min, y_grid_count).tolist()
+            candidates = []
+            for left_raw, top_raw in base_candidates:
+                left = float(np.clip(left_raw, x_margin, x_left_max))
+                top = float(np.clip(top_raw, y_top_min, y_top_max))
+                right = left + box_w
+                bottom = top - box_h
+                candidates.append((left, top, right, bottom, left_raw, top_raw))
+            for top in y_positions:
+                for left in x_positions:
+                    right = left + box_w
+                    bottom = top - box_h
+                    candidates.append((float(left), float(top), float(right), float(bottom), float(left), float(top)))
+
+            best = min(candidates, key=_candidate_key)
+            best_overlap = _candidate_key(best)[0]
+
         x_pos, y_pos = best[0], best[1]
 
     fig.add_annotation(
@@ -456,10 +548,15 @@ def remove_plot_text_block(fig: go.Figure, lines: list[str]) -> None:
         fig.layout.annotations = filtered
 
 
-def place_plot_text_block(fig: go.Figure, lines: list[str], font_size: int) -> None:
+def place_plot_text_block(
+    fig: go.Figure,
+    lines: list[str],
+    font_size: int,
+    layout: PlotTextBlockLayout | None = None,
+) -> None:
     """Reposition equation block by removing old one and placing with current layout."""
     remove_plot_text_block(fig, lines)
-    add_plot_text_block(fig, lines, font_size=font_size)
+    add_plot_text_block(fig, lines, font_size=font_size, layout=layout)
 
 
 def paper_size_mm(name: str) -> tuple[float, float]:
@@ -533,26 +630,33 @@ def scale_figure_for_export(
     stroke_factor = max(0.6, factor)
     error_factor = max(0.8, factor * 1.15)
 
+    def _maybe_scale_attr(obj: object, attr_name: str, default: float, factor_value: float, minimum: float) -> None:
+        """Scale a numeric Plotly attribute only when the target object exposes it."""
+        if obj is None or not hasattr(obj, attr_name):
+            return
+        value = getattr(obj, attr_name)
+        if value is None:
+            base_value = float(default)
+        else:
+            try:
+                base_value = float(value)
+            except (TypeError, ValueError):
+                return
+        setattr(obj, attr_name, max(float(minimum), base_value * float(factor_value)))
+
     for trace in out.data:
         if hasattr(trace, "line") and trace.line is not None:
-            base_width = 1.5 if trace.line.width is None else float(trace.line.width)
-            trace.line.width = max(0.8, base_width * stroke_factor)
+            _maybe_scale_attr(trace.line, "width", default=1.5, factor_value=stroke_factor, minimum=0.8)
         if hasattr(trace, "marker") and trace.marker is not None:
-            base_size = 7.0 if trace.marker.size is None else float(trace.marker.size)
-            trace.marker.size = max(1.5, base_size * marker_factor)
-            if trace.marker.line is not None:
-                base_mw = 1.0 if trace.marker.line.width is None else float(trace.marker.line.width)
-                trace.marker.line.width = max(0.8, base_mw * stroke_factor)
+            _maybe_scale_attr(trace.marker, "size", default=7.0, factor_value=marker_factor, minimum=1.5)
+            if hasattr(trace.marker, "line") and trace.marker.line is not None:
+                _maybe_scale_attr(trace.marker.line, "width", default=1.0, factor_value=stroke_factor, minimum=0.8)
         if hasattr(trace, "error_y") and trace.error_y is not None:
-            base_th = 1.2 if trace.error_y.thickness is None else float(trace.error_y.thickness)
-            trace.error_y.thickness = max(0.8, base_th * error_factor)
-            if trace.error_y.width is not None:
-                trace.error_y.width = max(1.0, float(trace.error_y.width) * error_factor)
+            _maybe_scale_attr(trace.error_y, "thickness", default=1.2, factor_value=error_factor, minimum=0.8)
+            _maybe_scale_attr(trace.error_y, "width", default=1.0, factor_value=error_factor, minimum=1.0)
         if hasattr(trace, "error_x") and trace.error_x is not None:
-            base_th = 1.2 if trace.error_x.thickness is None else float(trace.error_x.thickness)
-            trace.error_x.thickness = max(0.8, base_th * error_factor)
-            if trace.error_x.width is not None:
-                trace.error_x.width = max(1.0, float(trace.error_x.width) * error_factor)
+            _maybe_scale_attr(trace.error_x, "thickness", default=1.2, factor_value=error_factor, minimum=0.8)
+            _maybe_scale_attr(trace.error_x, "width", default=1.0, factor_value=error_factor, minimum=1.0)
 
     return out
 

@@ -196,8 +196,17 @@ def create_base_figure(df: pd.DataFrame, style: PlotStyle) -> go.Figure:
         xaxis_title=style.x_label,
         yaxis_title=style.y_label,
         font={"size": int(style.base_font_size)},
-        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "left", "x": 0.0},
+        legend={
+            "orientation": "h",
+            "yanchor": "bottom",
+            "y": 1.02,
+            "xanchor": "left",
+            "x": 0.0,
+            "bgcolor": "rgba(255,255,255,0.88)",
+        },
         margin={"l": 60, "r": 30, "t": 60, "b": 60},
+        paper_bgcolor="#FFFFFF",
+        plot_bgcolor="#FFFFFF",
     )
     fig.update_xaxes(
         showgrid=style.show_grid,

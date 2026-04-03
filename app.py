@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import base64
+from collections.abc import Callable
 from dataclasses import asdict
+from datetime import datetime
+import hashlib
+import json
 
 import numpy as np
 import pandas as pd
@@ -29,19 +33,23 @@ from src.config import (
 from src.data_io import (
     dataframe_to_csv_bytes,
     get_sample_dataframe,
+    get_statistics_sample_dataframe,
     load_table_file,
     prepare_measurement_data,
 )
 from src.export_utils import (
+    PlotTextBlockLayout,
     autoscale_figure_to_data as _autoscale_figure_to_data,
     build_summary_text as _build_summary_text,
     mm_to_px as _mm_to_px,
     paper_size_mm as _paper_size_mm,
     place_plot_text_block as _place_plot_text_block,
     scale_figure_for_export as _scale_figure_for_export,
+    scaled_text_font_size_for_export as _scaled_text_font_size_for_export,
 )
 from src.i18n import LANGUAGE_NAMES, translate
 from src.geometry import auto_triangle_points, custom_points_from_x
+from src.statistics import describe_distribution, normal_curve_points
 from src.plotting import (
     LineStyle,
     PlotStyle,
@@ -102,6 +110,897 @@ def _t(key: str, **kwargs: object) -> str:
     return translate(str(st.session_state.get("language", "de")), key, **kwargs)
 
 
+def _json_default(value: object) -> object:
+    """Serialize numpy-like values for export cache signatures."""
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    return str(value)
+
+
+def _export_signature(fig: go.Figure, **payload: object) -> str:
+    """Build a stable signature for an on-demand export artifact."""
+    digest = hashlib.sha256()
+    digest.update(fig.to_json().encode("utf-8"))
+    digest.update(json.dumps(payload, sort_keys=True, default=_json_default).encode("utf-8"))
+    return digest.hexdigest()
+
+
+def _export_plot_text_font_size(
+    preview_figure: go.Figure,
+    export_figure: go.Figure,
+    preview_box_font_size: int,
+    manual_layout: bool,
+    fallback_font_size: int,
+) -> int:
+    """Keep plot info-box text visually consistent between preview and export."""
+    export_base_font_size = (
+        float(export_figure.layout.font.size)
+        if export_figure.layout.font is not None and export_figure.layout.font.size is not None
+        else float(fallback_font_size)
+    )
+    if not manual_layout:
+        return int(round(export_base_font_size))
+
+    preview_base_font_size = (
+        float(preview_figure.layout.font.size)
+        if preview_figure.layout.font is not None and preview_figure.layout.font.size is not None
+        else float(fallback_font_size)
+    )
+    return _scaled_text_font_size_for_export(
+        requested_font_size=int(preview_box_font_size),
+        preview_base_font_size=preview_base_font_size,
+        export_base_font_size=export_base_font_size,
+    )
+
+
+def _render_on_demand_image_export(
+    *,
+    cache_key: str,
+    prepare_label: str,
+    spinner_label: str,
+    download_label: str,
+    file_name: str,
+    mime: str,
+    signature: str,
+    build_bytes: Callable[[], bytes],
+    unavailable_message_key: str,
+) -> None:
+    """Prepare heavy image exports only when explicitly requested."""
+    state_key = f"_export_cache_{cache_key}"
+    cached = st.session_state.get(state_key)
+    if not isinstance(cached, dict) or cached.get("signature") != signature:
+        st.session_state.pop(state_key, None)
+        cached = None
+
+    if st.button(prepare_label, key=f"{state_key}_prepare", use_container_width=True):
+        try:
+            with st.spinner(spinner_label):
+                export_bytes = build_bytes()
+            cached = {"signature": signature, "data": export_bytes}
+            st.session_state[state_key] = cached
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            st.session_state.pop(state_key, None)
+            cached = None
+            st.caption(_t(unavailable_message_key, error=exc))
+
+    if isinstance(cached, dict) and isinstance(cached.get("data"), (bytes, bytearray)):
+        st.download_button(
+            download_label,
+            data=bytes(cached["data"]),
+            file_name=file_name,
+            mime=mime,
+            use_container_width=True,
+            key=f"{state_key}_download",
+        )
+
+
+def _render_plot_text_box_controls(default_font_size: int) -> tuple[int, PlotTextBlockLayout]:
+    """Render automatic/manual controls for the plot info box."""
+    manual_box = st.checkbox(
+        _t("plot_settings.info_box_manual"),
+        value=False,
+        key="plot_info_box_manual",
+    )
+    if not manual_box:
+        return int(default_font_size), PlotTextBlockLayout()
+
+    st.caption(_t("plot_settings.info_box_caption"))
+    box_font_size = int(
+        st.number_input(
+            _t("plot_settings.info_box_font_size"),
+            min_value=6,
+            max_value=72,
+            value=int(default_font_size),
+            step=1,
+            key="plot_info_box_font_size",
+        )
+    )
+    box_x = float(
+        st.number_input(
+            _t("plot_settings.info_box_x"),
+            min_value=0.0,
+            max_value=1.0,
+            value=0.02,
+            step=0.01,
+            key="plot_info_box_x",
+            format="%.2f",
+        )
+    )
+    box_y = float(
+        st.number_input(
+            _t("plot_settings.info_box_y"),
+            min_value=0.0,
+            max_value=1.0,
+            value=0.98,
+            step=0.01,
+            key="plot_info_box_y",
+            format="%.2f",
+        )
+    )
+    box_width = float(
+        st.number_input(
+            _t("plot_settings.info_box_width"),
+            min_value=0.12,
+            max_value=0.95,
+            value=0.46,
+            step=0.01,
+            key="plot_info_box_width",
+            format="%.2f",
+        )
+    )
+    box_height = float(
+        st.number_input(
+            _t("plot_settings.info_box_height"),
+            min_value=0.08,
+            max_value=0.95,
+            value=0.28,
+            step=0.01,
+            key="plot_info_box_height",
+            format="%.2f",
+        )
+    )
+    return box_font_size, PlotTextBlockLayout(
+        manual=True,
+        x=box_x,
+        y=box_y,
+        max_width=box_width,
+        max_height=box_height,
+    )
+
+
+def _best_statistics_column(columns: list[str], dataframe: pd.DataFrame) -> str:
+    """Pick the column with the most numeric values as default statistics input."""
+    best_column = columns[0]
+    best_count = -1
+    for column in columns:
+        numeric_count = int(pd.to_numeric(dataframe[column], errors="coerce").notna().sum())
+        if numeric_count > best_count:
+            best_column = column
+            best_count = numeric_count
+    return best_column
+
+
+def _build_statistics_summary_text(
+    raw_df: pd.DataFrame,
+    stats_column: str,
+    numeric_values_df: pd.DataFrame,
+    stats_result: object,
+    bins: int,
+    normalize_density: bool,
+    include_normal_fit: bool,
+) -> str:
+    """Build summary text for the statistics mode export."""
+    lines: list[str] = []
+    lines.append(_t("statistics.summary_title"))
+    lines.append(_t("summary.generated", timestamp=datetime.now().isoformat(timespec="seconds")))
+    lines.append("")
+    lines.append(_t("summary.raw_data"))
+    lines.append(raw_df.to_csv(index=False).strip())
+    lines.append("")
+    lines.append(_t("statistics.summary_column", column=stats_column))
+    lines.append("")
+    lines.append(_t("statistics.summary_numeric_values"))
+    lines.append(numeric_values_df.to_csv(index=False).strip())
+    lines.append("")
+    lines.append(_t("statistics.summary_metrics"))
+    lines.append(_t("statistics.sample_size", value=str(int(stats_result.count))))
+    lines.append(_t("statistics.mean_value", value=f"{stats_result.mean:.6g}"))
+    lines.append(_t("statistics.std_value", value=f"{stats_result.std:.6g}"))
+    lines.append(_t("statistics.variance_value", value=f"{stats_result.variance:.6g}"))
+    lines.append(_t("statistics.median_value", value=f"{stats_result.median:.6g}"))
+    lines.append(_t("statistics.min_value", value=f"{stats_result.minimum:.6g}"))
+    lines.append(_t("statistics.max_value", value=f"{stats_result.maximum:.6g}"))
+    lines.append(_t("statistics.q1_value", value=f"{stats_result.q1:.6g}"))
+    lines.append(_t("statistics.q3_value", value=f"{stats_result.q3:.6g}"))
+    lines.append("")
+    lines.append(_t("statistics.summary_histogram"))
+    lines.append(f"bins = {int(bins)}")
+    lines.append(f"density = {bool(normalize_density)}")
+    lines.append("")
+    lines.append(_t("statistics.summary_fit"))
+    if include_normal_fit:
+        lines.append(r"f(x) = 1/(\sigma\cdot sqrt(2\pi)) \cdot exp(-(x-\mu)^2 / (2\sigma^2))")
+        lines.append(_t("statistics.mean_value", value=f"{stats_result.mean:.6g}"))
+        lines.append(_t("statistics.std_value", value=f"{stats_result.std:.6g}"))
+    else:
+        lines.append(_t("statistics.summary_fit_unavailable"))
+    return "\n".join(lines)
+
+
+def _render_statistics_mode(edited_df: pd.DataFrame, columns: list[str]) -> None:
+    """Render histogram and normal-distribution analysis for a single numeric column."""
+    default_stats_column = _best_statistics_column(columns, edited_df)
+
+    with st.sidebar:
+        st.header(_t("statistics.header"))
+        st.caption(_t("statistics.caption"))
+        stats_column = st.selectbox(
+            _t("statistics.column"),
+            options=columns,
+            index=_safe_default_index(columns, default_stats_column),
+            key="stats_column",
+            help=_t("statistics.column_help"),
+        )
+        bins = int(
+            st.number_input(
+                _t("statistics.bins"),
+                min_value=4,
+                max_value=100,
+                value=12,
+                step=1,
+                key="stats_bins",
+            )
+        )
+        normalize_density = st.checkbox(
+            _t("statistics.normalize_density"),
+            value=True,
+            key="stats_normalize_density",
+        )
+        use_latex_plot = st.checkbox(
+            _t("plot_settings.use_latex"),
+            value=True,
+            key="use_latex_plot",
+            help=_t("plot_settings.use_latex_help"),
+        )
+        auto_axis_labels = st.checkbox(
+            _t("statistics.auto_axis_labels"),
+            value=True,
+            key="stats_auto_axis_labels",
+        )
+        default_x_label = str(stats_column).strip() or "x"
+        default_y_label = (
+            _t("statistics.default_y_label_density")
+            if normalize_density
+            else _t("statistics.default_y_label_count")
+        )
+        if auto_axis_labels:
+            st.session_state["stats_x_label_input"] = default_x_label
+            st.session_state["stats_y_label_input"] = default_y_label
+        x_label = st.text_input(
+            _t("statistics.x_axis_label"),
+            key="stats_x_label_input",
+            disabled=auto_axis_labels,
+            help=_t("plot_settings.x_axis_help"),
+        )
+        y_label = st.text_input(
+            _t("statistics.y_axis_label"),
+            key="stats_y_label_input",
+            disabled=auto_axis_labels,
+            help=_t("plot_settings.y_axis_help"),
+        )
+        if auto_axis_labels:
+            x_label = default_x_label
+            y_label = default_y_label
+        st.caption(_t("plot_settings.axis_tip"))
+
+        use_separate_font_sizes = st.checkbox(
+            _t("plot_settings.separate_fonts"),
+            value=False,
+            key="use_separate_fonts",
+        )
+        if use_separate_font_sizes:
+            base_font_size = st.number_input(
+                _t("plot_settings.base_font_size"),
+                min_value=8,
+                max_value=36,
+                value=14,
+                step=1,
+                key="base_font_size",
+            )
+            axis_title_font_size = st.number_input(
+                _t("plot_settings.axis_title_font_size"),
+                min_value=8,
+                max_value=42,
+                value=16,
+                step=1,
+                key="axis_title_font_size",
+            )
+            tick_font_size = st.number_input(
+                _t("plot_settings.tick_font_size"),
+                min_value=8,
+                max_value=30,
+                value=12,
+                step=1,
+                key="tick_font_size",
+            )
+            annotation_font_size = st.number_input(
+                _t("plot_settings.annotation_font_size"),
+                min_value=8,
+                max_value=30,
+                value=12,
+                step=1,
+                key="annotation_font_size",
+            )
+        else:
+            global_font_size = st.number_input(
+                _t("plot_settings.font_size_all"),
+                min_value=8,
+                max_value=42,
+                value=14,
+                step=1,
+                key="global_font_size",
+            )
+            base_font_size = int(global_font_size)
+            axis_title_font_size = int(global_font_size)
+            tick_font_size = int(global_font_size)
+            annotation_font_size = int(global_font_size)
+
+        plot_info_box_font_size, plot_info_box_layout = _render_plot_text_box_controls(int(annotation_font_size))
+
+        show_grid = st.checkbox(_t("plot_settings.show_grid"), value=True, key="show_grid")
+        x_tick_decimals = st.number_input(
+            _t("plot_settings.x_decimals"),
+            min_value=0,
+            max_value=8,
+            value=2,
+            step=1,
+            key="x_tick_decimals",
+        )
+        y_tick_decimals = st.number_input(
+            _t("plot_settings.y_decimals"),
+            min_value=0,
+            max_value=8,
+            value=3,
+            step=1,
+            key="y_tick_decimals",
+        )
+
+        show_normal_fit = st.checkbox(
+            _t("statistics.show_normal_fit"),
+            value=True,
+            key="stats_show_normal_fit",
+        )
+        show_formula_box = st.checkbox(
+            _t("statistics.show_formula_box"),
+            value=True,
+            disabled=not show_normal_fit,
+            key="stats_show_formula_box",
+        )
+        show_mean_line = st.checkbox(
+            _t("statistics.show_mean_line"),
+            value=True,
+            key="stats_show_mean_line",
+        )
+        show_std_lines = st.checkbox(
+            _t("statistics.show_std_lines"),
+            value=True,
+            key="stats_show_std_lines",
+        )
+        show_two_sigma = st.checkbox(
+            _t("statistics.show_two_sigma"),
+            value=True,
+            disabled=not show_std_lines,
+            key="stats_show_two_sigma",
+        )
+        show_three_sigma = st.checkbox(
+            _t("statistics.show_three_sigma"),
+            value=False,
+            disabled=not show_std_lines,
+            key="stats_show_three_sigma",
+        )
+        histogram_color = st.color_picker(
+            _t("statistics.histogram_color"),
+            value="#7aa6ff",
+            key="stats_histogram_color",
+        )
+        stats_fit_color = st.color_picker(
+            _t("statistics.fit_color"),
+            value="#2ca02c",
+            key="stats_fit_color",
+        )
+        stats_mean_color = st.color_picker(
+            _t("statistics.mean_color"),
+            value="#d62728",
+            key="stats_mean_color",
+        )
+        stats_std_color = st.color_picker(
+            _t("statistics.std_color"),
+            value="#ff8c00",
+            key="stats_std_color",
+        )
+
+    numeric_series = pd.to_numeric(edited_df[stats_column], errors="coerce")
+    numeric_values = numeric_series.dropna().to_numpy(dtype=float)
+    dropped_count = int(numeric_series.isna().sum())
+
+    if numeric_values.size == 0:
+        st.error(_t("statistics.no_numeric_values"))
+        st.stop()
+    if numeric_values.size < 2:
+        st.error(_t("statistics.not_enough_values"))
+        st.stop()
+    if dropped_count > 0:
+        st.info(_t("statistics.numeric_rows_used", used=str(int(numeric_values.size)), dropped=str(dropped_count)))
+
+    stats_result = describe_distribution(numeric_values)
+    constant_data = bool(np.isclose(stats_result.std, 0.0))
+    if constant_data and show_normal_fit:
+        st.info(_t("statistics.fit_unavailable_constant"))
+
+    hist_range = None
+    if np.isclose(stats_result.minimum, stats_result.maximum):
+        pad = max(1.0, abs(stats_result.minimum) * 0.05, 0.5)
+        hist_range = (stats_result.minimum - pad, stats_result.maximum + pad)
+
+    hist_values, bin_edges = np.histogram(
+        numeric_values,
+        bins=int(bins),
+        density=bool(normalize_density),
+        range=hist_range,
+    )
+    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+    bin_widths = np.diff(bin_edges)
+    avg_bin_width = float(np.mean(bin_widths)) if bin_widths.size else 1.0
+
+    normal_curve_x: np.ndarray | None = None
+    normal_curve_y: np.ndarray | None = None
+    include_normal_fit = bool(show_normal_fit and not constant_data)
+    if include_normal_fit:
+        normal_curve_x, normal_curve_y = normal_curve_points(
+            numeric_values,
+            mean=stats_result.mean,
+            std=stats_result.std,
+        )
+        if not normalize_density:
+            normal_curve_y = normal_curve_y * float(numeric_values.size) * avg_bin_width
+
+    x_positions = [float(bin_edges[0]), float(bin_edges[-1])]
+    if normal_curve_x is not None:
+        x_positions.extend([float(normal_curve_x[0]), float(normal_curve_x[-1])])
+    if show_mean_line:
+        x_positions.append(float(stats_result.mean))
+    if show_std_lines and not constant_data:
+        sigma_multiples = [1]
+        if show_two_sigma:
+            sigma_multiples.append(2)
+        if show_three_sigma:
+            sigma_multiples.append(3)
+        for multiple in sigma_multiples:
+            x_positions.append(float(stats_result.mean - multiple * stats_result.std))
+            x_positions.append(float(stats_result.mean + multiple * stats_result.std))
+
+    x_min_plot = float(min(x_positions))
+    x_max_plot = float(max(x_positions))
+    if np.isclose(x_min_plot, x_max_plot):
+        x_pad = max(1.0, abs(x_min_plot) * 0.05, 0.5)
+    else:
+        x_pad = (x_max_plot - x_min_plot) * 0.05
+    x_min_plot -= x_pad
+    x_max_plot += x_pad
+
+    y_candidates = [float(np.max(hist_values)) if hist_values.size else 0.0]
+    if normal_curve_y is not None and normal_curve_y.size:
+        y_candidates.append(float(np.max(normal_curve_y)))
+    y_top = max(1.0, max(y_candidates) * 1.12 if max(y_candidates) > 0 else 1.0)
+
+    rendered_x_label = _to_plot_math_text(x_label, use_latex_plot)
+    rendered_y_label = _to_plot_math_text(y_label, use_latex_plot)
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            x=bin_centers,
+            y=hist_values,
+            width=bin_widths,
+            marker={"color": histogram_color, "line": {"color": histogram_color, "width": 1.0}},
+            opacity=0.72,
+            name=_to_plot_math_text(_t("statistics.histogram_label"), use_latex_plot),
+            hovertemplate=(
+                f"{rendered_x_label}: %{{x:.{int(x_tick_decimals)}f}}<br>"
+                f"{rendered_y_label}: %{{y:.{int(y_tick_decimals)}f}}<extra></extra>"
+            ),
+        )
+    )
+
+    if normal_curve_x is not None and normal_curve_y is not None:
+        fig.add_trace(
+            go.Scatter(
+                x=normal_curve_x,
+                y=normal_curve_y,
+                mode="lines",
+                line={"color": stats_fit_color, "width": 2.6},
+                name=_to_plot_math_text(_t("statistics.normal_fit_label"), use_latex_plot),
+            )
+        )
+
+    def _add_vertical_marker(x_value: float, label: str, color: str, dash: str, legend_group: str) -> None:
+        fig.add_trace(
+            go.Scatter(
+                x=[x_value, x_value],
+                y=[0.0, y_top],
+                mode="lines",
+                line={"color": color, "width": 1.8, "dash": dash},
+                name=_to_plot_math_text(label, use_latex_plot),
+                legendgroup=legend_group,
+                hovertemplate=f"x = {x_value:.6g}<extra></extra>",
+            )
+        )
+
+    if show_mean_line:
+        _add_vertical_marker(
+            float(stats_result.mean),
+            _t("statistics.mean_legend"),
+            stats_mean_color,
+            "dash",
+            "stats_mean",
+        )
+
+    if show_std_lines and not constant_data:
+        sigma_multiples = [1]
+        if show_two_sigma:
+            sigma_multiples.append(2)
+        if show_three_sigma:
+            sigma_multiples.append(3)
+        for multiple in sigma_multiples:
+            sigma_label = _t("statistics.sigma_legend", multiple=str(multiple))
+            for sign, dash_style, show_legend in ((-1.0, "dot", True), (1.0, "dot", False)):
+                fig.add_trace(
+                    go.Scatter(
+                        x=[float(stats_result.mean + sign * multiple * stats_result.std)] * 2,
+                        y=[0.0, y_top],
+                        mode="lines",
+                        line={"color": stats_std_color, "width": 1.5, "dash": dash_style},
+                        name=_to_plot_math_text(sigma_label, use_latex_plot),
+                        legendgroup=f"stats_sigma_{multiple}",
+                        showlegend=show_legend,
+                        hovertemplate=(
+                            f"x = {float(stats_result.mean + sign * multiple * stats_result.std):.6g}<extra></extra>"
+                        ),
+                    )
+                )
+
+    fig.update_layout(
+        template="plotly_white",
+        xaxis_title=rendered_x_label,
+        yaxis_title=rendered_y_label,
+        font={"size": int(base_font_size)},
+        legend={
+            "orientation": "h",
+            "yanchor": "bottom",
+            "y": 1.02,
+            "xanchor": "left",
+            "x": 0.0,
+            "bgcolor": "rgba(255,255,255,0.88)",
+        },
+        margin={"l": 60, "r": 30, "t": 60, "b": 60},
+        bargap=0.04,
+        paper_bgcolor="#FFFFFF",
+        plot_bgcolor="#FFFFFF",
+    )
+    fig.update_xaxes(
+        showgrid=show_grid,
+        gridcolor="rgba(120,120,120,0.32)",
+        tickformat=f".{int(x_tick_decimals)}f",
+        title_font={"size": int(axis_title_font_size)},
+        tickfont={"size": int(tick_font_size)},
+        range=[x_min_plot, x_max_plot],
+    )
+    fig.update_yaxes(
+        showgrid=show_grid,
+        gridcolor="rgba(120,120,120,0.32)",
+        tickformat=f".{int(y_tick_decimals)}f",
+        title_font={"size": int(axis_title_font_size)},
+        tickfont={"size": int(tick_font_size)},
+        range=[0.0, y_top],
+    )
+
+    plot_info_lines: list[str] = []
+    if show_formula_box and include_normal_fit:
+        plot_info_lines = [
+            _t("statistics.formula_title"),
+            "f(x) = 1/(σ·sqrt(2π)) · exp(-(x-μ)² / (2σ²))",
+            f"\\mu = {stats_result.mean:.6g}",
+            f"\\sigma = {stats_result.std:.6g}",
+        ]
+    _place_plot_text_block(
+        fig,
+        [_to_plot_math_text(line, use_latex_plot) for line in plot_info_lines],
+        font_size=int(plot_info_box_font_size),
+        layout=plot_info_box_layout,
+    )
+
+    plot_col, output_col = st.columns([2.2, 1.1])
+    with plot_col:
+        st.subheader(_t("main.plot"))
+        st.plotly_chart(fig, use_container_width=True, theme=None)
+
+    with output_col:
+        st.subheader(_t("statistics.output_header"))
+        st.latex(r"f(x)=\frac{1}{\sigma\sqrt{2\pi}}\exp\left(-\frac{(x-\mu)^2}{2\sigma^2}\right)")
+        st.write(_t("statistics.sample_size", value=str(int(stats_result.count))))
+        st.latex(rf"\mu = {stats_result.mean:.6g}")
+        st.latex(rf"\sigma = {stats_result.std:.6g}")
+        st.write(_t("statistics.variance_value", value=f"{stats_result.variance:.6g}"))
+        st.write(_t("statistics.median_value", value=f"{stats_result.median:.6g}"))
+        st.write(_t("statistics.min_value", value=f"{stats_result.minimum:.6g}"))
+        st.write(_t("statistics.max_value", value=f"{stats_result.maximum:.6g}"))
+        st.write(_t("statistics.q1_value", value=f"{stats_result.q1:.6g}"))
+        st.write(_t("statistics.q3_value", value=f"{stats_result.q3:.6g}"))
+        if not include_normal_fit:
+            st.caption(_t("statistics.summary_fit_unavailable"))
+
+    st.subheader(_t("export.header"))
+    with st.sidebar:
+        st.header(_t("export.sidebar_header"))
+        export_base = st.text_input(_t("export.filename_prefix"), value="statistics_plot", key="export_base")
+        png_paper = st.selectbox(_t("export.paper_size"), options=["A4", "A5", "Letter"], index=0, key="png_paper")
+        png_orientation = st.selectbox(
+            _t("export.orientation"),
+            options=["portrait", "landscape"],
+            index=1,
+            key="png_orientation",
+            format_func=lambda value: _t(f"orientation.{value}"),
+        )
+        png_dpi = st.number_input(_t("export.png_dpi"), min_value=72, max_value=600, value=300, step=1, key="png_dpi")
+        png_scale = st.number_input(_t("export.png_scale"), min_value=1.0, max_value=4.0, value=1.0, step=0.1, key="png_scale")
+        png_word_like = st.checkbox(
+            _t("export.word_like_text"),
+            value=True,
+            key="png_word_like",
+        )
+        png_text_pt = st.number_input(
+            _t("export.target_text_size"),
+            min_value=6.0,
+            max_value=36.0,
+            value=14.0,
+            step=0.5,
+            disabled=not png_word_like,
+            key="png_text_pt",
+        )
+        png_visual_scale = st.number_input(
+            _t("export.extra_visual_scale"),
+            min_value=0.5,
+            max_value=5.0,
+            value=1.0,
+            step=0.1,
+            key="png_visual_scale",
+        )
+
+    numeric_values_df = pd.DataFrame({stats_column: numeric_values})
+    summary_text = _build_statistics_summary_text(
+        raw_df=edited_df,
+        stats_column=stats_column,
+        numeric_values_df=numeric_values_df,
+        stats_result=stats_result,
+        bins=int(bins),
+        normalize_density=bool(normalize_density),
+        include_normal_fit=include_normal_fit,
+    )
+
+    paper_w_mm, paper_h_mm = _paper_size_mm(png_paper)
+    if png_orientation == "landscape":
+        paper_w_mm, paper_h_mm = paper_h_mm, paper_w_mm
+    base_export_dpi = int(png_dpi)
+    png_width = _mm_to_px(paper_w_mm, base_export_dpi)
+    png_height = _mm_to_px(paper_h_mm, base_export_dpi)
+    png_export_scale = float(max(0.2, png_scale))
+
+    export_cols = st.columns(5)
+
+    with export_cols[0]:
+        st.download_button(
+            _t("statistics.export_values_csv"),
+            data=dataframe_to_csv_bytes(numeric_values_df),
+            file_name=f"{export_base}_numeric_values.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+    def _build_statistics_export_figure() -> go.Figure:
+        export_figure = go.Figure(fig)
+        export_figure.update_layout(width=png_width, height=png_height)
+        export_figure = _scale_figure_for_export(
+            export_figure,
+            visual_scale=float(png_visual_scale),
+            target_text_pt=float(png_text_pt) if png_word_like else None,
+            base_export_dpi=base_export_dpi,
+        )
+        export_box_font_size = _export_plot_text_font_size(
+            preview_figure=fig,
+            export_figure=export_figure,
+            preview_box_font_size=int(plot_info_box_font_size),
+            manual_layout=bool(plot_info_box_layout.manual),
+            fallback_font_size=int(annotation_font_size),
+        )
+        _place_plot_text_block(
+            export_figure,
+            [_to_plot_math_text(line, use_latex_plot) for line in plot_info_lines],
+            font_size=export_box_font_size,
+            layout=plot_info_box_layout,
+        )
+        return export_figure
+
+    with export_cols[1]:
+        _render_on_demand_image_export(
+            cache_key="statistics_png",
+            prepare_label=_t("export.prepare", format="PNG"),
+            spinner_label=_t("export.preparing", format="PNG"),
+            download_label=_t("export.download_png", paper=png_paper, orientation=_t(f"orientation.{png_orientation}")),
+            file_name=f"{export_base}.png",
+            mime="image/png",
+            signature=_export_signature(
+                fig,
+                mode="statistics",
+                format="png",
+                width=png_width,
+                height=png_height,
+                scale=png_export_scale,
+                base_export_dpi=base_export_dpi,
+                word_like=bool(png_word_like),
+                target_text_pt=float(png_text_pt) if png_word_like else None,
+                visual_scale=float(png_visual_scale),
+                plot_info_lines=[_to_plot_math_text(line, use_latex_plot) for line in plot_info_lines],
+                plot_info_box_layout=asdict(plot_info_box_layout),
+                plot_info_box_font_size=int(plot_info_box_font_size),
+                annotation_font_size=int(annotation_font_size),
+                use_latex_plot=bool(use_latex_plot),
+            ),
+            build_bytes=lambda: figure_to_image_bytes(
+                _build_statistics_export_figure(),
+                "png",
+                width=png_width,
+                height=png_height,
+                scale=png_export_scale,
+            ),
+            unavailable_message_key="export.png_unavailable",
+        )
+
+    with export_cols[2]:
+        _render_on_demand_image_export(
+            cache_key="statistics_svg",
+            prepare_label=_t("export.prepare", format="SVG"),
+            spinner_label=_t("export.preparing", format="SVG"),
+            download_label=_t("export.download_svg"),
+            file_name=f"{export_base}.svg",
+            mime="image/svg+xml",
+            signature=_export_signature(
+                fig,
+                mode="statistics",
+                format="svg",
+                width=png_width,
+                height=png_height,
+                scale=1.0,
+                base_export_dpi=base_export_dpi,
+                word_like=bool(png_word_like),
+                target_text_pt=float(png_text_pt) if png_word_like else None,
+                visual_scale=float(png_visual_scale),
+                plot_info_lines=[_to_plot_math_text(line, use_latex_plot) for line in plot_info_lines],
+                plot_info_box_layout=asdict(plot_info_box_layout),
+                plot_info_box_font_size=int(plot_info_box_font_size),
+                annotation_font_size=int(annotation_font_size),
+                use_latex_plot=bool(use_latex_plot),
+            ),
+            build_bytes=lambda: figure_to_image_bytes(
+                _build_statistics_export_figure(),
+                "svg",
+                width=png_width,
+                height=png_height,
+                scale=1.0,
+            ),
+            unavailable_message_key="export.svg_unavailable",
+        )
+
+    with export_cols[3]:
+        _render_on_demand_image_export(
+            cache_key="statistics_pdf",
+            prepare_label=_t("export.prepare", format="PDF"),
+            spinner_label=_t("export.preparing", format="PDF"),
+            download_label=_t("export.download_pdf", paper=png_paper, orientation=_t(f"orientation.{png_orientation}")),
+            file_name=f"{export_base}.pdf",
+            mime="application/pdf",
+            signature=_export_signature(
+                fig,
+                mode="statistics",
+                format="pdf",
+                width=png_width,
+                height=png_height,
+                scale=1.0,
+                base_export_dpi=base_export_dpi,
+                word_like=bool(png_word_like),
+                target_text_pt=float(png_text_pt) if png_word_like else None,
+                visual_scale=float(png_visual_scale),
+                plot_info_lines=[_to_plot_math_text(line, use_latex_plot) for line in plot_info_lines],
+                plot_info_box_layout=asdict(plot_info_box_layout),
+                plot_info_box_font_size=int(plot_info_box_font_size),
+                annotation_font_size=int(annotation_font_size),
+                use_latex_plot=bool(use_latex_plot),
+            ),
+            build_bytes=lambda: figure_to_image_bytes(
+                _build_statistics_export_figure(),
+                "pdf",
+                width=png_width,
+                height=png_height,
+                scale=1.0,
+            ),
+            unavailable_message_key="export.pdf_unavailable",
+        )
+
+    with export_cols[4]:
+        st.download_button(
+            _t("export.download_summary_md"),
+            data=summary_text.encode("utf-8"),
+            file_name=f"{export_base}_summary.md",
+            mime="text/markdown",
+            use_container_width=True,
+        )
+
+    st.download_button(
+        _t("export.download_summary_txt"),
+        data=summary_text.encode("utf-8"),
+        file_name=f"{export_base}_summary.txt",
+        mime="text/plain",
+    )
+
+    st.session_state["_prefs"] = {
+        "app_mode": "statistics",
+        "language": st.session_state.get("language", "de"),
+        "stats_column": stats_column,
+        "stats_bins": int(bins),
+        "stats_normalize_density": bool(normalize_density),
+        "use_latex_plot": bool(use_latex_plot),
+        "stats_auto_axis_labels": bool(auto_axis_labels),
+        "stats_x_label_input": x_label,
+        "stats_y_label_input": y_label,
+        "use_separate_fonts": bool(use_separate_font_sizes),
+        "global_font_size": int(global_font_size) if not use_separate_font_sizes else int(base_font_size),
+        "base_font_size": int(base_font_size),
+        "axis_title_font_size": int(axis_title_font_size),
+        "tick_font_size": int(tick_font_size),
+        "annotation_font_size": int(annotation_font_size),
+        "show_grid": bool(show_grid),
+        "x_tick_decimals": int(x_tick_decimals),
+        "y_tick_decimals": int(y_tick_decimals),
+        "stats_show_normal_fit": bool(show_normal_fit),
+        "stats_show_formula_box": bool(show_formula_box),
+        "stats_show_mean_line": bool(show_mean_line),
+        "stats_show_std_lines": bool(show_std_lines),
+        "stats_show_two_sigma": bool(show_two_sigma),
+        "stats_show_three_sigma": bool(show_three_sigma),
+        "stats_histogram_color": histogram_color,
+        "stats_fit_color": stats_fit_color,
+        "stats_mean_color": stats_mean_color,
+        "stats_std_color": stats_std_color,
+        "plot_info_box_manual": bool(plot_info_box_layout.manual),
+        "plot_info_box_font_size": int(plot_info_box_font_size),
+        "plot_info_box_x": float(st.session_state.get("plot_info_box_x", 0.02)),
+        "plot_info_box_y": float(st.session_state.get("plot_info_box_y", 0.98)),
+        "plot_info_box_width": float(st.session_state.get("plot_info_box_width", 0.46)),
+        "plot_info_box_height": float(st.session_state.get("plot_info_box_height", 0.28)),
+        "export_base": export_base,
+        "png_paper": png_paper,
+        "png_orientation": png_orientation,
+        "png_dpi": int(png_dpi),
+        "png_scale": float(png_scale),
+        "png_word_like": bool(png_word_like),
+        "png_text_pt": float(png_text_pt),
+        "png_visual_scale": float(png_visual_scale),
+    }
+    _save_session_snapshot(st.session_state)
+    st.stop()
+
+
 def _apply_sidebar_brand_css() -> None:
     """Make the sidebar brand area flush with the top sidebar edges."""
     st.markdown(
@@ -136,6 +1035,20 @@ def _apply_sidebar_brand_css() -> None:
             height: auto;
             display: block;
         }
+
+        [data-testid="stSidebar"] .sidebar-brand-credit {
+            margin: 0.15rem 0 0.65rem 0;
+            color: rgba(71, 85, 105, 0.78);
+            font-size: 0.78rem;
+            letter-spacing: 0.01em;
+            padding: 0 0.85rem;
+        }
+
+        [data-testid="stDeployButton"],
+        .stAppDeployButton,
+        button[kind="header"]:has([data-testid="stDeployButton"]) {
+            display: none !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -157,6 +1070,7 @@ def _render_brand_header() -> None:
                 alt="{APP_TITLE} logo"
             />
         </div>
+        <div class="sidebar-brand-credit">made by Mihai Cazac</div>
         """,
         unsafe_allow_html=True,
     )
@@ -169,6 +1083,7 @@ _normalize_legacy_selection("fit_model")
 _normalize_legacy_selection("error_line_mode_widget")
 _normalize_legacy_selection("error_line_mode")
 _normalize_legacy_selection("png_orientation")
+_normalize_legacy_selection("app_mode", {"physics": "normal"})
 _apply_sidebar_brand_css()
 
 with st.sidebar:
@@ -179,6 +1094,12 @@ with st.sidebar:
         options=["de", "en"],
         format_func=lambda code: LANGUAGE_NAMES.get(code, code),
         key="language",
+    )
+    st.selectbox(
+        _t("settings.mode"),
+        options=["normal", "statistics"],
+        format_func=lambda mode: _t(f"app_mode.{mode}"),
+        key="app_mode",
     )
 
     st.header(_t("data_source.header"))
@@ -191,8 +1112,9 @@ with st.sidebar:
         _clear_session_snapshot()
         st.success(_t("data_source.saved_settings_removed"))
 
-    if st.button(_t("data_source.use_sample_data"), use_container_width=True):
-        st.session_state["table_df"] = get_sample_dataframe()
+    sample_button_label = _t("data_source.use_statistics_sample_data") if st.session_state.get("app_mode", "normal") == "statistics" else _t("data_source.use_normal_sample_data")
+    if st.button(sample_button_label, use_container_width=True):
+        st.session_state["table_df"] = get_statistics_sample_dataframe() if st.session_state.get("app_mode", "normal") == "statistics" else get_sample_dataframe()
         st.session_state["uploaded_signature"] = ""
         if "table_editor" in st.session_state:
             del st.session_state["table_editor"]
@@ -231,6 +1153,9 @@ columns = [str(col) for col in edited_df.columns]
 if not columns:
     st.error(_t("table.add_column_error"))
     st.stop()
+
+if st.session_state.get("app_mode", "normal") == "statistics":
+    _render_statistics_mode(edited_df, columns)
 
 none_option = "<None>"
 column_options = [none_option] + columns
@@ -439,6 +1364,7 @@ with st.sidebar:
         axis_title_font_size = int(global_font_size)
         tick_font_size = int(global_font_size)
         annotation_font_size = int(global_font_size)
+    plot_info_box_font_size, plot_info_box_layout = _render_plot_text_box_controls(int(annotation_font_size))
     show_grid = st.checkbox(_t("plot_settings.show_grid"), value=True, key="show_grid")
     grid_mode = st.selectbox(
         _t("plot_settings.grid_mode"),
@@ -1072,13 +1998,18 @@ if show_r2_on_plot and show_fit_line:
         plot_info_lines.append(f"R² = {r_squared:.6g}")
 
 plot_info_lines = [_to_plot_math_text(line, use_latex_plot) for line in plot_info_lines]
-_place_plot_text_block(fig, plot_info_lines, font_size=int(annotation_font_size))
+_place_plot_text_block(
+    fig,
+    plot_info_lines,
+    font_size=int(plot_info_box_font_size),
+    layout=plot_info_box_layout,
+)
 
 plot_col, output_col = st.columns([2.2, 1.1])
 
 with plot_col:
     st.subheader(_t("main.plot"))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, theme=None)
 
 with output_col:
     st.subheader(_t("main.scientific_output"))
@@ -1118,7 +2049,7 @@ with output_col:
 st.subheader(_t("export.header"))
 with st.sidebar:
     st.header(_t("export.sidebar_header"))
-    export_base = st.text_input(_t("export.filename_prefix"), value="physics_plot", key="export_base")
+    export_base = st.text_input(_t("export.filename_prefix"), value="graphik_plot", key="export_base")
     png_paper = st.selectbox(_t("export.paper_size"), options=["A4", "A5", "Letter"], index=0, key="png_paper")
     png_orientation = st.selectbox(
         _t("export.orientation"),
@@ -1179,122 +2110,141 @@ with export_cols[0]:
         use_container_width=True,
     )
 
+def _build_normal_export_figure() -> go.Figure:
+    export_figure = (
+        _autoscale_figure_to_data(fig, x_data, y_data, sigma_y_data, y_axis_type)
+        if autoscale_export_axes
+        else go.Figure(fig)
+    )
+    export_figure.update_layout(width=png_width, height=png_height)
+    export_figure = _scale_figure_for_export(
+        export_figure,
+        visual_scale=float(png_visual_scale),
+        target_text_pt=float(png_text_pt) if png_word_like else None,
+        base_export_dpi=base_export_dpi,
+    )
+    export_box_font_size = _export_plot_text_font_size(
+        preview_figure=fig,
+        export_figure=export_figure,
+        preview_box_font_size=int(plot_info_box_font_size),
+        manual_layout=bool(plot_info_box_layout.manual),
+        fallback_font_size=int(annotation_font_size),
+    )
+    _place_plot_text_block(
+        export_figure,
+        plot_info_lines,
+        font_size=export_box_font_size,
+        layout=plot_info_box_layout,
+    )
+    return export_figure
+
 with export_cols[1]:
-    try:
-        fig_export = (
-            _autoscale_figure_to_data(fig, x_data, y_data, sigma_y_data, y_axis_type)
-            if autoscale_export_axes
-            else go.Figure(fig)
-        )
-        fig_export.update_layout(width=png_width, height=png_height)
-        fig_png = _scale_figure_for_export(
-            fig_export,
-            visual_scale=float(png_visual_scale),
-            target_text_pt=float(png_text_pt) if png_word_like else None,
+    _render_on_demand_image_export(
+        cache_key="normal_png",
+        prepare_label=_t("export.prepare", format="PNG"),
+        spinner_label=_t("export.preparing", format="PNG"),
+        download_label=_t("export.download_png", paper=png_paper, orientation=_t(f"orientation.{png_orientation}")),
+        file_name=f"{export_base}.png",
+        mime="image/png",
+        signature=_export_signature(
+            fig,
+            mode="normal",
+            format="png",
+            width=png_width,
+            height=png_height,
+            scale=png_export_scale,
+            autoscale_export_axes=bool(autoscale_export_axes),
+            y_axis_type=y_axis_type,
             base_export_dpi=base_export_dpi,
-        )
-        export_text_font_size = int(
-            round(
-                float(fig_png.layout.font.size)
-                if fig_png.layout.font is not None and fig_png.layout.font.size is not None
-                else float(annotation_font_size)
-            )
-        )
-        _place_plot_text_block(fig_png, plot_info_lines, font_size=export_text_font_size)
-        png_bytes = figure_to_image_bytes(
-            fig_png,
+            word_like=bool(png_word_like),
+            target_text_pt=float(png_text_pt) if png_word_like else None,
+            visual_scale=float(png_visual_scale),
+            plot_info_lines=plot_info_lines,
+            plot_info_box_layout=asdict(plot_info_box_layout),
+            plot_info_box_font_size=int(plot_info_box_font_size),
+            annotation_font_size=int(annotation_font_size),
+        ),
+        build_bytes=lambda: figure_to_image_bytes(
+            _build_normal_export_figure(),
             "png",
             width=png_width,
             height=png_height,
             scale=png_export_scale,
-        )
-        st.download_button(
-            _t("export.download_png", paper=png_paper, orientation=_t(f"orientation.{png_orientation}")),
-            data=png_bytes,
-            file_name=f"{export_base}.png",
-            mime="image/png",
-            use_container_width=True,
-        )
-    except Exception as exc:  # pylint: disable=broad-exception-caught
-        st.caption(_t("export.png_unavailable", error=exc))
+        ),
+        unavailable_message_key="export.png_unavailable",
+    )
 
 with export_cols[2]:
-    try:
-        fig_export_svg = (
-            _autoscale_figure_to_data(fig, x_data, y_data, sigma_y_data, y_axis_type)
-            if autoscale_export_axes
-            else go.Figure(fig)
-        )
-        fig_export_svg.update_layout(width=png_width, height=png_height)
-        fig_export_svg = _scale_figure_for_export(
-            fig_export_svg,
-            visual_scale=float(png_visual_scale),
-            target_text_pt=float(png_text_pt) if png_word_like else None,
+    _render_on_demand_image_export(
+        cache_key="normal_svg",
+        prepare_label=_t("export.prepare", format="SVG"),
+        spinner_label=_t("export.preparing", format="SVG"),
+        download_label=_t("export.download_svg"),
+        file_name=f"{export_base}.svg",
+        mime="image/svg+xml",
+        signature=_export_signature(
+            fig,
+            mode="normal",
+            format="svg",
+            width=png_width,
+            height=png_height,
+            scale=1.0,
+            autoscale_export_axes=bool(autoscale_export_axes),
+            y_axis_type=y_axis_type,
             base_export_dpi=base_export_dpi,
-        )
-        export_text_font_size_svg = int(
-            round(
-                float(fig_export_svg.layout.font.size)
-                if fig_export_svg.layout.font is not None and fig_export_svg.layout.font.size is not None
-                else float(annotation_font_size)
-            )
-        )
-        _place_plot_text_block(fig_export_svg, plot_info_lines, font_size=export_text_font_size_svg)
-        svg_bytes = figure_to_image_bytes(
-            fig_export_svg,
+            word_like=bool(png_word_like),
+            target_text_pt=float(png_text_pt) if png_word_like else None,
+            visual_scale=float(png_visual_scale),
+            plot_info_lines=plot_info_lines,
+            plot_info_box_layout=asdict(plot_info_box_layout),
+            plot_info_box_font_size=int(plot_info_box_font_size),
+            annotation_font_size=int(annotation_font_size),
+        ),
+        build_bytes=lambda: figure_to_image_bytes(
+            _build_normal_export_figure(),
             "svg",
             width=png_width,
             height=png_height,
             scale=1.0,
-        )
-        st.download_button(
-            _t("export.download_svg"),
-            data=svg_bytes,
-            file_name=f"{export_base}.svg",
-            mime="image/svg+xml",
-            use_container_width=True,
-        )
-    except Exception as exc:  # pylint: disable=broad-exception-caught
-        st.caption(_t("export.svg_unavailable", error=exc))
+        ),
+        unavailable_message_key="export.svg_unavailable",
+    )
 
 with export_cols[3]:
-    try:
-        fig_export_pdf = (
-            _autoscale_figure_to_data(fig, x_data, y_data, sigma_y_data, y_axis_type)
-            if autoscale_export_axes
-            else go.Figure(fig)
-        )
-        fig_export_pdf.update_layout(width=png_width, height=png_height)
-        fig_export_pdf = _scale_figure_for_export(
-            fig_export_pdf,
-            visual_scale=float(png_visual_scale),
-            target_text_pt=float(png_text_pt) if png_word_like else None,
+    _render_on_demand_image_export(
+        cache_key="normal_pdf",
+        prepare_label=_t("export.prepare", format="PDF"),
+        spinner_label=_t("export.preparing", format="PDF"),
+        download_label=_t("export.download_pdf", paper=png_paper, orientation=_t(f"orientation.{png_orientation}")),
+        file_name=f"{export_base}.pdf",
+        mime="application/pdf",
+        signature=_export_signature(
+            fig,
+            mode="normal",
+            format="pdf",
+            width=png_width,
+            height=png_height,
+            scale=1.0,
+            autoscale_export_axes=bool(autoscale_export_axes),
+            y_axis_type=y_axis_type,
             base_export_dpi=base_export_dpi,
-        )
-        export_text_font_size_pdf = int(
-            round(
-                float(fig_export_pdf.layout.font.size)
-                if fig_export_pdf.layout.font is not None and fig_export_pdf.layout.font.size is not None
-                else float(annotation_font_size)
-            )
-        )
-        _place_plot_text_block(fig_export_pdf, plot_info_lines, font_size=export_text_font_size_pdf)
-        pdf_bytes = figure_to_image_bytes(
-            fig_export_pdf,
+            word_like=bool(png_word_like),
+            target_text_pt=float(png_text_pt) if png_word_like else None,
+            visual_scale=float(png_visual_scale),
+            plot_info_lines=plot_info_lines,
+            plot_info_box_layout=asdict(plot_info_box_layout),
+            plot_info_box_font_size=int(plot_info_box_font_size),
+            annotation_font_size=int(annotation_font_size),
+        ),
+        build_bytes=lambda: figure_to_image_bytes(
+            _build_normal_export_figure(),
             "pdf",
             width=png_width,
             height=png_height,
             scale=1.0,
-        )
-        st.download_button(
-            _t("export.download_pdf", paper=png_paper, orientation=_t(f"orientation.{png_orientation}")),
-            data=pdf_bytes,
-            file_name=f"{export_base}.pdf",
-            mime="application/pdf",
-            use_container_width=True,
-        )
-    except Exception as exc:  # pylint: disable=broad-exception-caught
-        st.caption(_t("export.pdf_unavailable", error=exc))
+        ),
+        unavailable_message_key="export.pdf_unavailable",
+    )
 
 summary_text = _build_summary_text(
     raw_df=edited_df,
@@ -1325,6 +2275,7 @@ st.download_button(
 )
 
 st.session_state["_prefs"] = {
+    "app_mode": "normal",
     "mapping_mode": mapping_mode,
     "use_zero_error": use_zero_error,
     "use_latex_plot": use_latex_plot,
@@ -1340,6 +2291,12 @@ st.session_state["_prefs"] = {
     "axis_title_font_size": int(axis_title_font_size),
     "tick_font_size": int(tick_font_size),
     "annotation_font_size": int(annotation_font_size),
+    "plot_info_box_manual": bool(plot_info_box_layout.manual),
+    "plot_info_box_font_size": int(plot_info_box_font_size),
+    "plot_info_box_x": float(st.session_state.get("plot_info_box_x", 0.02)),
+    "plot_info_box_y": float(st.session_state.get("plot_info_box_y", 0.98)),
+    "plot_info_box_width": float(st.session_state.get("plot_info_box_width", 0.46)),
+    "plot_info_box_height": float(st.session_state.get("plot_info_box_height", 0.28)),
     "show_grid": show_grid,
     "grid_mode": grid_mode,
     "x_major_divisions": int(x_major_divisions),

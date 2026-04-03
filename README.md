@@ -3,7 +3,7 @@
 </p>
 
 # Graphik
-
+###### By Mihai Cazac
 Graphik is a local Streamlit app for creating clean scientific plots for lab reports.
 It is designed for workflows with measurement tables, error bars, best-fit lines, error lines, slope triangles, and export-ready figures.
 
@@ -17,6 +17,7 @@ It is designed for workflows with measurement tables, error bars, best-fit lines
 - Add a best-fit line 
 - Add error lines for linear and exponential workflows
 - Display the fit and error line functions and the  coefficient of determination 
+- Statistic Mode
 - Draw slope triangles with automatic `Δx` / `Δy` labels
 - Use math-style notation in labels such as `\Delta m`, `T_i`, `T^2`, `\sigma_T`
 - Export figures as PNG, SVG, and PDF
@@ -26,7 +27,7 @@ It is designed for workflows with measurement tables, error bars, best-fit lines
 
 ![Graphik dashboard](Present/Dashboard.png)
 
-## Install
+## Install (any platform with python support)
 
 ### Requirements
 
