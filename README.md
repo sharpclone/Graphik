@@ -37,7 +37,7 @@ It is designed for workflows with measurement tables, error bars, best-fit lines
 
 You can either download the repository as a ZIP from GitHub:
 
-- <https://github.com/sharpclone/Graphik>
+- <https://github.com/sharpclone/Graphik/archive/refs/heads/main.zip>
 
 Or clone it with Git:
 
