@@ -13,12 +13,14 @@ It is designed for workflows with measurement tables, error bars, best-fit lines
 - Edit data directly in the browser with a table UI
 - Map any columns to `x`, `y`, and vertical uncertainty
 - Plot measurement points with visible vertical error bars
-- Add a best-fit line (`Ausgleichsgerade`)
-- Add error lines (`Fehlergeraden`) for linear and exponential workflows
+- Auto grid, milimetric grid, exponential grid 
+- Add a best-fit line 
+- Add error lines for linear and exponential workflows
+- Display the fit and error line functions and the  coefficient of determination 
 - Draw slope triangles with automatic `Δx` / `Δy` labels
 - Use math-style notation in labels such as `\Delta m`, `T_i`, `T^2`, `\sigma_T`
-- Switch the interface between German and English
 - Export figures as PNG, SVG, and PDF
+- much more, try it out
 
 ## Dashboard
 
@@ -28,7 +30,6 @@ It is designed for workflows with measurement tables, error bars, best-fit lines
 
 ### Requirements
 
-- macOS or Linux
 - Python 3.11 or newer
 - `git` installed if you want to clone the repository
 
