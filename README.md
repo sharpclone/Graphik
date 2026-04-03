@@ -27,12 +27,14 @@ It is designed for workflows with measurement tables, error bars, best-fit lines
 
 ![Graphik dashboard](Present/Dashboard.png)
 
-## Install (any platform with python support)
+
+
+## Standard Install (recommended)
 
 ### Requirements
-
 - Python 3.11 or newer
 - `git` installed if you want to clone the repository
+
 
 ### Get the repository
 
@@ -53,11 +55,32 @@ If you downloaded the ZIP instead, extract it and enter the project folder:
 cd Graphik
 ```
 
-### Run locally
+### Install dependencies
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+```
+### Run the app
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
 streamlit run app.py
 ```
+
+## Windows Portable Build
+
+For Windows users, there is also a portable build provided here as a zip. You just download and unarchive it.
+It includes:
+
+- `Graphik.exe`
+- `_include/`
+
+Both must stay in the same folder. The executable will not work correctly if `_include` is moved, renamed, or deleted.
+
+Build output: `dist_portable/Graphik/`
+Default local URL: `http://127.0.0.1:8501/`
+If Graphik is already running, launching the executable again will reopen the existing local app instead of starting a second instance.
+

@@ -1,4 +1,4 @@
-"""Application configuration constants for the physics plotting tool."""
+"""Application configuration constants for the Graphik plotting tool."""
 
 from __future__ import annotations
 

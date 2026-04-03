@@ -74,8 +74,9 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.datas,
     [],
-    exclude_binaries=True,
     name="Graphik",
     debug=False,
     bootloader_ignore_signals=False,
@@ -83,15 +84,4 @@ exe = EXE(
     upx=False,
     console=False,
     disable_windowed_traceback=False,
-    contents_directory="_include",
-)
-
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=False,
-    upx_exclude=[],
-    name="Graphik",
 )

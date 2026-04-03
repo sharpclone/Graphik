@@ -178,17 +178,11 @@ def squared_label_from_column(column_name: str) -> str:
 def auto_axis_labels(
     x_column: str,
     y_column: str | None,
-    derive_y: bool,
-    t_mean_column: str | None,
 ) -> tuple[str, str]:
-    """Suggest axis labels based on selected input columns."""
+    """Suggest axis labels based on selected explicit x/y columns."""
     x_label = str(x_column).strip() if str(x_column).strip() else DEFAULT_X_LABEL
-    if derive_y:
-        t_col = str(t_mean_column).strip() if t_mean_column else "T"
-        y_label = squared_label_from_column(t_col)
-    else:
-        y_col = str(y_column).strip() if y_column else ""
-        y_label = y_col if y_col else DEFAULT_Y_LABEL
+    y_col = str(y_column).strip() if y_column else ""
+    y_label = y_col if y_col else DEFAULT_Y_LABEL
     return x_label, y_label
 
 

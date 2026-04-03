@@ -1,4 +1,4 @@
-"""Plotly plotting utilities for physics lab style diagrams."""
+"""Plotly plotting utilities for Graphik preview figures."""
 
 from __future__ import annotations
 
@@ -453,13 +453,16 @@ def figure_to_image_bytes(
     width: int | None = None,
     height: int | None = None,
     scale: float = 1.0,
+    base_dpi: int = 300,
 ) -> bytes:
-    """Export figure to image bytes for download."""
-    if fmt not in {"png", "svg", "pdf"}:
-        raise ValueError("Supported formats are 'png', 'svg', and 'pdf'.")
-    kwargs: dict[str, int | float | str] = {"format": fmt, "scale": float(scale)}
-    if width is not None:
-        kwargs["width"] = int(width)
-    if height is not None:
-        kwargs["height"] = int(height)
-    return fig.to_image(**kwargs)
+    """Export figure to image bytes for download using the Matplotlib backend."""
+    from .mpl_export import plotly_figure_to_image_bytes
+
+    return plotly_figure_to_image_bytes(
+        fig,
+        fmt,
+        width=width,
+        height=height,
+        scale=scale,
+        base_dpi=base_dpi,
+    )

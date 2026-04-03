@@ -11,7 +11,6 @@ from typing import BinaryIO
 import numpy as np
 import pandas as pd
 
-from .calculations import compute_sigma_y_from_t, compute_y_from_t
 
 
 @dataclass(frozen=True)
@@ -19,8 +18,6 @@ class PreparedData:
     """Prepared numeric dataset for plotting/analysis."""
 
     dataframe: pd.DataFrame
-    used_derived_y: bool
-    used_derived_sigma_y: bool
 
 
 def get_sample_dataframe() -> pd.DataFrame:
@@ -297,64 +294,26 @@ def _to_numeric(series: pd.Series, column_name: str) -> pd.Series:
 def prepare_measurement_data(
     source_df: pd.DataFrame,
     x_col: str,
-    derive_y: bool,
-    derive_sigma_y: bool,
-    y_col: str | None = None,
-    sigma_y_col: str | None = None,
-    t_mean_col: str | None = None,
-    sigma_t_col: str | None = None,
+    y_col: str,
+    sigma_y_col: str,
 ) -> PreparedData:
-    """Build the validated analysis dataframe with x, y and sigma_y columns."""
+    """Build the validated analysis dataframe with explicit x, y, and sigma_y columns."""
     df = sanitize_dataframe(source_df)
 
     if x_col not in df.columns:
         raise ValueError(f"Selected x column '{x_col}' does not exist.")
+    if y_col not in df.columns:
+        raise ValueError("Choose a valid y column.")
+    if sigma_y_col not in df.columns:
+        raise ValueError("Choose a valid sigma_y column.")
 
-    if derive_y:
-        if not t_mean_col or t_mean_col not in df.columns:
-            raise ValueError("To derive y = T^2, choose a valid T_mean column.")
-    else:
-        if not y_col or y_col not in df.columns:
-            raise ValueError("Choose a valid y column or enable automatic y derivation from T_mean.")
-
-    if derive_sigma_y:
-        if not t_mean_col or t_mean_col not in df.columns:
-            raise ValueError("To derive sigma_y, choose a valid T_mean column.")
-        if not sigma_t_col or sigma_t_col not in df.columns:
-            raise ValueError("To derive sigma_y, choose a valid sigma_T column.")
-    else:
-        if not sigma_y_col or sigma_y_col not in df.columns:
-            raise ValueError(
-                "Choose a valid sigma_y column or enable automatic sigma_y derivation from T_mean and sigma_T."
-            )
-
-    required_columns: list[str] = [x_col]
-    required_columns.append(t_mean_col if derive_y else y_col)  # type: ignore[arg-type]
-    if derive_sigma_y:
-        required_columns.append(t_mean_col)  # type: ignore[arg-type]
-        required_columns.append(sigma_t_col)  # type: ignore[arg-type]
-    else:
-        required_columns.append(sigma_y_col)  # type: ignore[arg-type]
-    required_columns = list(dict.fromkeys(required_columns))
+    required_columns = [x_col, y_col, sigma_y_col]
     df = _trim_leading_non_data_rows(df, required_columns)
 
     out = pd.DataFrame()
     out["x"] = _to_numeric(df[x_col], x_col)
-
-    if derive_y:
-        t_numeric = _to_numeric(df[t_mean_col], t_mean_col)
-        out["T_mean"] = t_numeric
-        out["y"] = compute_y_from_t(t_numeric.to_numpy())
-    else:
-        out["y"] = _to_numeric(df[y_col], y_col)
-
-    if derive_sigma_y:
-        t_numeric = _to_numeric(df[t_mean_col], t_mean_col)
-        sigma_t_numeric = _to_numeric(df[sigma_t_col], sigma_t_col)
-        out["sigma_T"] = sigma_t_numeric
-        out["sigma_y"] = compute_sigma_y_from_t(t_numeric.to_numpy(), sigma_t_numeric.to_numpy())
-    else:
-        out["sigma_y"] = _to_numeric(df[sigma_y_col], sigma_y_col)
+    out["y"] = _to_numeric(df[y_col], y_col)
+    out["sigma_y"] = _to_numeric(df[sigma_y_col], sigma_y_col)
 
     out = out.dropna(subset=["x", "y", "sigma_y"]).reset_index(drop=True)
 
@@ -364,11 +323,7 @@ def prepare_measurement_data(
     if (out["sigma_y"] < 0).any():
         raise ValueError("sigma_y values must be non-negative.")
 
-    return PreparedData(
-        dataframe=out,
-        used_derived_y=derive_y,
-        used_derived_sigma_y=derive_sigma_y,
-    )
+    return PreparedData(dataframe=out)
 
 
 def dataframe_to_csv_bytes(df: pd.DataFrame) -> bytes:

@@ -117,8 +117,6 @@ def test_prepare_measurement_data_trims_leading_non_data_rows() -> None:
     prepared = prepare_measurement_data(
         source_df=source,
         x_col="m",
-        derive_y=False,
-        derive_sigma_y=False,
         y_col="y",
         sigma_y_col="sigma_y",
     )

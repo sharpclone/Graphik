@@ -1,6 +1,8 @@
 @echo off
 setlocal
 
+set DIST_DIR=dist_portable
+
 if not exist .venv\Scripts\python.exe (
     echo [ERROR] .venv was not found.
     echo Create it first with:
@@ -14,10 +16,11 @@ echo [1/3] Installing build dependency...
 .venv\Scripts\python.exe -m pip install --upgrade pyinstaller
 if errorlevel 1 exit /b 1
 
-echo [2/3] Building Windows bundle...
-.venv\Scripts\pyinstaller.exe --noconfirm --clean Graphik.spec
+echo [2/3] Building Windows portable bundle...
+.venv\Scripts\pyinstaller.exe --noconfirm --clean --distpath %DIST_DIR% Graphik.spec
 if errorlevel 1 exit /b 1
 
 echo [3/3] Done.
-echo Output folder: dist\Graphik
-echo Start file: dist\Graphik\Graphik.exe
+echo Output folder: %DIST_DIR%\Graphik
+echo Start file: %DIST_DIR%\Graphik\Graphik.exe
+echo Required support files: %DIST_DIR%\Graphik\_include

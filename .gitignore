@@ -12,6 +12,9 @@ ENV/
 # Build artifacts
 build/
 dist/
+dist_new/
+dist_fixed/
+dist_portable/
 
 # Test and tool caches
 .pytest_cache/

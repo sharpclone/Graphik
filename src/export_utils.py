@@ -579,6 +579,7 @@ def scale_figure_for_export(
     visual_scale: float,
     target_text_pt: float | None = None,
     base_export_dpi: int = 300,
+    text_unit: str = "px",
 ) -> go.Figure:
     """Scale fonts, markers, and line widths for export readability."""
     out = go.Figure(fig)
@@ -588,26 +589,32 @@ def scale_figure_for_export(
 
     auto_factor = 1.0
     if target_text_pt is not None:
-        target_px = (float(target_text_pt) / 72.0) * float(base_export_dpi)
-        auto_factor = max(0.1, target_px / max(1.0, original_base_font))
+        unit = str(text_unit).lower()
+        if unit == "pt":
+            target_size = float(target_text_pt)
+        else:
+            target_size = (float(target_text_pt) / 72.0) * float(base_export_dpi)
+        auto_factor = max(0.1, target_size / max(1.0, original_base_font))
 
-    factor = max(0.2, auto_factor * float(visual_scale))
-    if abs(factor - 1.0) < 1e-9:
+    text_factor = max(0.2, auto_factor)
+    visual_factor = max(0.2, float(visual_scale))
+    non_text_factor = max(0.2, auto_factor * visual_factor)
+    if abs(text_factor - 1.0) < 1e-9 and abs(non_text_factor - 1.0) < 1e-9:
         return out
 
-    def _scaled(value: float | int | None, default: float) -> float:
+    def _scaled(value: float | int | None, default: float, factor_value: float) -> float:
         base = default if value is None else float(value)
-        return max(1.0, base * factor)
+        return max(1.0, base * factor_value)
 
     if out.layout.font is None:
         out.layout.font = {}
-    out.layout.font.size = _scaled(out.layout.font.size, original_base_font)
+    out.layout.font.size = _scaled(out.layout.font.size, original_base_font, text_factor)
 
     if out.layout.legend is not None:
         if out.layout.legend.font is None:
             out.layout.legend.font = {}
         legend_default = original_base_font * 0.9
-        out.layout.legend.font.size = _scaled(out.layout.legend.font.size, legend_default)
+        out.layout.legend.font.size = _scaled(out.layout.legend.font.size, legend_default, text_factor)
 
     for axis_name in ("xaxis", "yaxis"):
         axis = getattr(out.layout, axis_name, None)
@@ -616,19 +623,19 @@ def scale_figure_for_export(
         if axis.title is not None:
             if axis.title.font is None:
                 axis.title.font = {}
-            axis.title.font.size = _scaled(axis.title.font.size, original_base_font * 1.1)
+            axis.title.font.size = _scaled(axis.title.font.size, original_base_font * 1.1, text_factor)
         if axis.tickfont is None:
             axis.tickfont = {}
-        axis.tickfont.size = _scaled(axis.tickfont.size, original_base_font * 0.9)
+        axis.tickfont.size = _scaled(axis.tickfont.size, original_base_font * 0.9, text_factor)
 
     for ann in out.layout.annotations or []:
         if ann.font is None:
             ann.font = {}
-        ann.font.size = _scaled(ann.font.size, original_base_font * 0.9)
+        ann.font.size = _scaled(ann.font.size, original_base_font * 0.9, text_factor)
 
-    marker_factor = max(0.6, factor**0.8)
-    stroke_factor = max(0.6, factor)
-    error_factor = max(0.8, factor * 1.15)
+    marker_factor = max(0.6, non_text_factor**0.8)
+    stroke_factor = max(0.6, non_text_factor)
+    error_factor = max(0.8, non_text_factor * 1.15)
 
     def _maybe_scale_attr(obj: object, attr_name: str, default: float, factor_value: float, minimum: float) -> None:
         """Scale a numeric Plotly attribute only when the target object exposes it."""
