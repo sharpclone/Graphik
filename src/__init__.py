@@ -1,1 +1,1 @@
-"""Physics lab plotting package."""
+"""Graphik plotting package."""

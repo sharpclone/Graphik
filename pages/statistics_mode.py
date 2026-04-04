@@ -2,17 +2,25 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pandas as pd
 import streamlit as st
 
-from pages.common import render_font_controls, render_plot_info_box_controls
+from pages.common import (
+    render_font_controls,
+    render_plot_info_box_controls,
+    render_plot_info_box_status,
+    render_problem_list,
+)
 from services.analysis_service import analyze_statistics_mode, best_statistics_column, build_statistics_summary_text
-from services.export_service import ExportRequest, render_export_buttons, render_export_settings
+from services.export_service import ExportRequest, build_export_figure, render_export_buttons, render_export_settings
+from services.validation_service import collect_statistics_mode_problems, has_blocking_problems
 from src.data_io import dataframe_to_csv_bytes
 from src.mode_models import StatisticsModeConfig
 from src.ui_helpers import safe_default_index
 
-TranslateFn = callable
+TranslateFn = Callable[..., str]
 STATISTICS_PREFIX = "stats."
 
 
@@ -20,7 +28,11 @@ def _k(name: str) -> str:
     return f"{STATISTICS_PREFIX}{name}"
 
 
-def render_statistics_controls(edited_df: pd.DataFrame, columns: list[str], translate) -> StatisticsModeConfig:
+def render_statistics_controls(
+    edited_df: pd.DataFrame,
+    columns: list[str],
+    translate: TranslateFn,
+) -> StatisticsModeConfig:
     """Render the statistics sidebar controls and return a typed config object."""
     default_stats_column = best_statistics_column(columns, edited_df)
     st.header(translate("statistics.header"))
@@ -51,7 +63,11 @@ def render_statistics_controls(edited_df: pd.DataFrame, columns: list[str], tran
     show_grid = bool(st.checkbox(translate("plot_settings.show_grid"), value=True, key=_k("show_grid")))
     x_tick_decimals = int(st.number_input(translate("plot_settings.x_decimals"), min_value=0, max_value=8, value=2, step=1, key=_k("x_tick_decimals")))
     y_tick_decimals = int(st.number_input(translate("plot_settings.y_decimals"), min_value=0, max_value=8, value=2, step=1, key=_k("y_tick_decimals")))
-    show_normal_fit = bool(st.checkbox(translate("statistics.show_normal_fit"), value=True, key=_k("show_normal_fit")))
+    numeric_values = pd.to_numeric(edited_df[stats_column], errors="coerce").dropna().to_numpy(dtype=float)
+    normal_fit_available = bool(numeric_values.size >= 2 and not (numeric_values.size and (numeric_values == numeric_values[0]).all()))
+    if not normal_fit_available:
+        st.caption(translate("validation.normal_fit_unavailable_detail"))
+    show_normal_fit = bool(st.checkbox(translate("statistics.show_normal_fit"), value=True, key=_k("show_normal_fit"), disabled=not normal_fit_available, help=None if normal_fit_available else translate("validation.normal_fit_unavailable_detail")))
     show_formula_box = bool(st.checkbox(translate("statistics.show_formula_box"), value=True, key=_k("show_formula_box")))
     show_mean_line = bool(st.checkbox(translate("statistics.show_mean_line"), value=True, key=_k("show_mean_line")))
     show_std_lines = bool(st.checkbox(translate("statistics.show_std_lines"), value=True, key=_k("show_std_lines")))
@@ -90,10 +106,19 @@ def render_statistics_controls(edited_df: pd.DataFrame, columns: list[str], tran
     )
 
 
-def render_statistics_mode(edited_df: pd.DataFrame, columns: list[str], translate) -> dict[str, object]:
+def render_statistics_mode(
+    edited_df: pd.DataFrame,
+    columns: list[str],
+    translate: TranslateFn,
+) -> dict[str, object]:
     """Render the full statistics mode and return persisted preferences."""
     with st.sidebar:
         config = render_statistics_controls(edited_df, columns, translate)
+
+    problems = collect_statistics_mode_problems(edited_df, config, translate=translate)
+    render_problem_list(problems, translate)
+    if has_blocking_problems(problems):
+        st.stop()
 
     try:
         result = analyze_statistics_mode(edited_df, config, translate=translate)
@@ -110,6 +135,7 @@ def render_statistics_mode(edited_df: pd.DataFrame, columns: list[str], translat
     with plot_col:
         st.subheader(translate("main.plot"))
         st.plotly_chart(result.plot_contract.preview_figure, use_container_width=True, theme=None)
+        render_plot_info_box_status(result.plot_contract.plot_info_status, translate)
 
     with output_col:
         st.subheader(translate("statistics.output_header"))
@@ -131,7 +157,7 @@ def render_statistics_mode(edited_df: pd.DataFrame, columns: list[str], translat
         export_config = render_export_settings(
             translate=translate,
             default_base_name="statistics_plot",
-            include_autoscale=False,
+            include_autoscale=True,
             key_prefix=STATISTICS_PREFIX,
         )
 
@@ -145,6 +171,29 @@ def render_statistics_mode(edited_df: pd.DataFrame, columns: list[str], translat
         include_normal_fit=result.include_normal_fit,
         translate=translate,
     )
+    if export_config.show_clean_export_preview:
+        try:
+            clean_preview = build_export_figure(
+                ExportRequest(
+                    mode="statistics",
+                    cache_prefix="statistics_preview",
+                    preview_figure=result.plot_contract.preview_figure,
+                    config=export_config,
+                    plot_info_lines=result.plot_contract.plot_info_lines,
+                    plot_info_box_layout=result.plot_contract.plot_info_box.to_layout(),
+                    plot_info_box_font_size=result.plot_contract.plot_info_box.font_size,
+                    annotation_font_size=result.plot_contract.annotation_font_size,
+                    signature_payload={
+                        "stats_column": config.stats_column,
+                        "preview_kind": "clean_export",
+                    },
+                ),
+                lambda: result.plot_contract.build_export_base_figure(export_config.autoscale_axes),
+            )
+            with st.expander(translate("export.clean_preview_header"), expanded=False):
+                st.plotly_chart(clean_preview, use_container_width=True, theme=None)
+        except Exception as exc:  # pragma: no cover - preview convenience boundary
+            st.info(translate("export.clean_preview_failed", error=exc))
     export_cols = st.columns(5)
     with export_cols[0]:
         st.download_button(
@@ -173,7 +222,7 @@ def render_statistics_mode(edited_df: pd.DataFrame, columns: list[str], translat
             },
         ),
         translate=translate,
-        build_base_figure=result.plot_contract.build_export_base_figure,
+        build_base_figure=lambda: result.plot_contract.build_export_base_figure(export_config.autoscale_axes),
     )
     with export_cols[4]:
         st.download_button(
@@ -225,6 +274,8 @@ def render_statistics_mode(edited_df: pd.DataFrame, columns: list[str], translat
         _k("plot_info_box_width"): float(st.session_state.get(_k("plot_info_box_width"), 0.46)),
         _k("plot_info_box_height"): float(st.session_state.get(_k("plot_info_box_height"), 0.28)),
         _k("export_base"): export_config.base_name,
+        _k("export_preset"): export_config.preset_name,
+        _k("show_clean_export_preview"): bool(export_config.show_clean_export_preview),
         _k("png_paper"): export_config.paper,
         _k("png_orientation"): export_config.orientation,
         _k("png_dpi"): int(export_config.dpi),
@@ -232,4 +283,5 @@ def render_statistics_mode(edited_df: pd.DataFrame, columns: list[str], translat
         _k("png_word_like"): bool(export_config.target_text_pt is not None),
         _k("png_text_pt"): float(st.session_state.get(_k("png_text_pt"), export_config.target_text_pt or 14.0)),
         _k("png_visual_scale"): float(export_config.visual_scale),
+        _k("autoscale_export_axes"): bool(export_config.autoscale_axes),
     }

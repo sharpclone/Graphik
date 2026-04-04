@@ -1,0 +1,29 @@
+{
+  "include": [
+    "app.py",
+    "pages/import_wizard.py",
+    "services/import_service.py",
+    "services/state_service.py",
+    "src/logging_utils.py",
+    "src/mode_models.py",
+    "src/session_types.py",
+    "src/ui_state.py"
+  ],
+  "exclude": [
+    "**/__pycache__",
+    ".venv",
+    "build",
+    "dist",
+    "dist_portable",
+    ".streamlit",
+    "tests"
+  ],
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "basic",
+  "reportMissingImports": false,
+  "reportMissingModuleSource": false,
+  "reportMissingTypeStubs": false,
+  "reportAttributeAccessIssue": false
+}

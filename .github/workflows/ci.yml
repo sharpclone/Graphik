@@ -1,0 +1,46 @@
+﻿name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Ruff
+        run: ruff check .
+
+      - name: Black
+        run: black --check .
+
+      - name: isort
+        run: isort --check-only .
+
+      - name: Mypy
+        run: mypy
+
+      - name: Pyright
+        run: pyright app.py pages/import_wizard.py services/import_service.py services/state_service.py src/logging_utils.py src/mode_models.py src/session_types.py src/ui_state.py
+
+      - name: Function length check
+        run: python scripts/check_function_lengths.py
+
+      - name: Pytest
+        run: pytest -q

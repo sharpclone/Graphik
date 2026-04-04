@@ -14,28 +14,27 @@ not silently generate incomplete PNG/SVG/PDF artifacts.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from io import BytesIO
 import html
 import re
+from dataclasses import dataclass
+from io import BytesIO
 from typing import Any
 
 import matplotlib
 
 matplotlib.use("Agg")
 
+import numpy as np
+import plotly.graph_objects as go
 from matplotlib import colors as mcolors
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
-from matplotlib.patches import Ellipse, Rectangle
-from matplotlib.ticker import FixedFormatter, FixedLocator, FuncFormatter, MultipleLocator
+from matplotlib.patches import Ellipse, Patch, Rectangle
+from matplotlib.ticker import FixedFormatter, FixedLocator, Formatter, FuncFormatter, Locator, MultipleLocator
 from matplotlib.transforms import Bbox, blended_transform_factory, offset_copy
-import numpy as np
-import plotly.graph_objects as go
 
 from .errors import ExportValidationError
-
 
 _PLOTLY_DASH_MAP: dict[str, Any] = {
     "solid": "-",
@@ -375,10 +374,10 @@ def _apply_axis_format(ax: Any, axis: Any, *, which: str) -> None:
     tickvals = _to_float_array(getattr(axis, "tickvals", None))
     ticktext = _to_string_list(getattr(axis, "ticktext", None))
     if tickvals.size and ticktext and tickvals.size == len(ticktext):
-        locator = FixedLocator(tickvals.tolist())
-        formatter = FixedFormatter([_html_to_mpl_text(text) for text in ticktext])
-        mpl_axis.set_major_locator(locator)
-        mpl_axis.set_major_formatter(formatter)
+        fixed_locator: Locator = FixedLocator(tickvals.tolist())
+        fixed_formatter: Formatter = FixedFormatter([_html_to_mpl_text(text) for text in ticktext])
+        mpl_axis.set_major_locator(fixed_locator)
+        mpl_axis.set_major_formatter(fixed_formatter)
     else:
         dtick = getattr(axis, "dtick", None)
         locator = _make_multiple_locator(dtick, getattr(axis, "tick0", None)) if not is_log else None
@@ -389,8 +388,8 @@ def _apply_axis_format(ax: Any, axis: Any, *, which: str) -> None:
         decimals_match = re.fullmatch(r"\.([0-9]+)f", str(tickformat)) if tickformat is not None else None
         if decimals_match:
             decimals = int(decimals_match.group(1))
-            formatter = FuncFormatter(lambda value, _pos: f"{value:.{decimals}f}")
-            mpl_axis.set_major_formatter(formatter)
+            tick_formatter: Formatter = FuncFormatter(lambda value, _pos: f"{value:.{decimals}f}")
+            mpl_axis.set_major_formatter(tick_formatter)
 
     minor = getattr(axis, "minor", None)
     if minor is None:
@@ -543,6 +542,7 @@ def _plot_bar(ax: Any, trace: go.Bar) -> None:
     x_vals = x_vals[:count]
     y_vals = y_vals[:count]
     width_vals = _to_float_array(getattr(trace, "width", None))
+    width: float | np.ndarray[Any, Any]
     if width_vals.size == 0:
         width = 0.8
     elif width_vals.size == 1:
@@ -618,7 +618,7 @@ def _draw_shape(ax: Any, shape: Any) -> None:
     height_value = abs(y1 - y0)
 
     if shape_type == "rect":
-        patch = Rectangle(
+        patch: Patch = Rectangle(
             (left, bottom),
             width_value,
             height_value,
@@ -745,6 +745,40 @@ def _draw_annotations(mpl_figure: Figure, ax: Any, fig: go.Figure) -> int:
     return rendered
 
 
+def _estimate_legend_entry_width_pt(label: str, font_size: float) -> float:
+    """Estimate one legend entry width in points for layout decisions."""
+    normalized = re.sub(r"\s+", " ", str(label)).strip()
+    if not normalized:
+        return max(24.0, font_size * 2.0)
+    text_width = len(normalized) * font_size * 0.58
+    handle_and_padding = font_size * 3.2
+    return max(24.0, text_width + handle_and_padding)
+
+
+def _choose_horizontal_legend_layout(
+    labels: tuple[str, ...],
+    *,
+    font_size: float,
+    available_width_pt: float,
+) -> tuple[int, float]:
+    """Pick a safe horizontal-legend column count and font size."""
+    candidate_font = max(7.0, float(font_size))
+    max_columns = min(len(labels), 4)
+    widest_entry = max(_estimate_legend_entry_width_pt(label, candidate_font) for label in labels)
+
+    if widest_entry > available_width_pt:
+        scale = max(0.55, available_width_pt / widest_entry)
+        candidate_font = max(7.0, candidate_font * scale * 0.97)
+
+    for ncols in range(max_columns, 0, -1):
+        per_column_width = available_width_pt / float(max(1, ncols))
+        widest_for_candidate = max(_estimate_legend_entry_width_pt(label, candidate_font) for label in labels)
+        if widest_for_candidate <= per_column_width * 0.92:
+            return ncols, candidate_font
+
+    return 1, candidate_font
+
+
 def _draw_legend(ax: Any, fig: go.Figure) -> bool:
     legend = getattr(fig.layout, "legend", None)
     handles, labels = ax.get_legend_handles_labels()
@@ -761,17 +795,23 @@ def _draw_legend(ax: Any, fig: go.Figure) -> bool:
     axes_bbox = ax.get_position()
 
     if orientation == "h":
-        ncols = min(len(labels), 4)
+        fig_width_in = max(1.0, figure.get_figwidth())
+        available_width_pt = max(120.0, axes_bbox.width * fig_width_in * 72.0)
+        ncols, legend_font_size = _choose_horizontal_legend_layout(labels, font_size=font_size, available_width_pt=available_width_pt)
         rows = int(np.ceil(len(labels) / max(1, ncols)))
         fig_height_in = max(1.0, figure.get_figheight())
-        row_height = max(0.026, (font_size / (72.0 * fig_height_in)) * 1.9)
-        top_margin_needed = min(0.30, max(0.085, (rows * row_height) + 0.028))
+        row_height = max(0.028, (legend_font_size / (72.0 * fig_height_in)) * 2.0)
+        top_margin_needed = min(0.42, max(0.09, (rows * row_height) + 0.03))
         current_top_margin = max(0.0, 1.0 - axes_bbox.y1)
         if current_top_margin < top_margin_needed:
-            new_top = max(0.42, 1.0 - top_margin_needed)
+            new_top = max(0.32, 1.0 - top_margin_needed)
             figure.subplots_adjust(top=new_top)
             axes_bbox = ax.get_position()
             current_top_margin = max(0.0, 1.0 - axes_bbox.y1)
+            fig_width_in = max(1.0, figure.get_figwidth())
+            available_width_pt = max(120.0, axes_bbox.width * fig_width_in * 72.0)
+            ncols, legend_font_size = _choose_horizontal_legend_layout(labels, font_size=legend_font_size, available_width_pt=available_width_pt)
+            rows = int(np.ceil(len(labels) / max(1, ncols)))
 
         box_left = axes_bbox.x0
         box_bottom = axes_bbox.y1 + max(0.006, current_top_margin * 0.08)
@@ -789,7 +829,7 @@ def _draw_legend(ax: Any, fig: go.Figure) -> bool:
             frameon=True,
             facecolor=bbox_face,
             edgecolor=(0, 0, 0, 0.18),
-            fontsize=font_size,
+            fontsize=legend_font_size,
             columnspacing=1.2,
             handlelength=2.4,
             borderaxespad=0.0,
@@ -861,6 +901,8 @@ def _ensure_export_decorations_fit(mpl_figure: Figure, ax: Any) -> None:
         _append_artist_bbox(ax.yaxis.get_offset_text())
         for label in list(ax.get_xticklabels()) + list(ax.get_yticklabels()):
             _append_artist_bbox(label)
+        for text_artist in list(ax.texts):
+            _append_artist_bbox(text_artist)
 
         legend = ax.get_legend()
         if legend is not None:

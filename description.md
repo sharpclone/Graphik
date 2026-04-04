@@ -97,21 +97,21 @@ The startup logic in [app.py](D:\grafiken\app.py) is:
 1. `st.set_page_config(...)`
    Configures title, favicon, and wide layout.
 
-2. `_restore_session_snapshot(...)`
-   Loads the last saved session snapshot from `.streamlit/last_session_state.pkl` if persistence is enabled.
+2. `restore_state(...)` via [services/state_service.py](D:\grafiken\services\state_service.py)
+   Restores persisted user preferences from `.streamlit/user_prefs.json` and the last runtime table payload from `.streamlit/last_runtime_state.pkl`. Legacy single-snapshot files are ignored and removed during cleanup.
 
-3. `_init_session_state(...)`
+3. `init_session_state(...)`
    Ensures the app has required defaults such as:
    - language
    - app mode
    - remember settings flag
    - initial table dataframe
-   - x/y range toggles
-   - error triangle visibility
+   - namespaced mode settings
+   - export and info-box defaults
 
-4. The UI is then rendered from restored state.
+4. The active page controller is rendered from restored state.
 
-This means the app is not stateless across restarts. Most user configuration survives app reloads unless explicitly cleared.
+This means the app is not stateless across restarts. User preferences and the last active table can survive reloads unless explicitly cleared.
 
 ---
 
@@ -177,14 +177,14 @@ This performs:
 
 4. all-unnamed fallback renaming
    - `_rename_all_unnamed_columns(...)`
-   - if all columns are `Unnamed:*`, Graphik assigns deterministic fallback names such as:
-     - `m`
-     - `T_mean`
-     - `sigma_T`
+   - if all columns are `Unnamed:*`, Graphik assigns deterministic generic fallback names such as:
+     - `x`
      - `y`
      - `sigma_y`
+     - `col_4`
+     - `col_5`
 
-This is specifically useful for `.ods` files where header cells may contain formulas rather than cached plain-text labels.
+This is specifically useful for `.ods` files where header cells may contain formulas rather than cached plain-text labels. The defaults are intentionally generic now, so imported tables do not imply a physics-specific workflow.
 
 ## 4.5 Numeric Validation
 
@@ -203,21 +203,9 @@ This prevents silent coercion of malformed spreadsheet inputs.
 
 ### Important current product decision
 
-Although [src/data_io.py](D:\grafiken\src\data_io.py) still contains support for deriving:
+The current user-facing product expects the user to provide already-prepared plotting columns. In normal mode, Graphik treats `x`, `y`, and optional `sigma_y` as explicit input data, not as quantities to be derived inside the app.
 
-- `y = T^2`
-- `sigma_y = 2 T sigma_T`
-
-that path is currently disabled in the active UI.
-
-In [app.py](D:\grafiken\app.py), the app always calls:
-
-- `derive_y=False`
-- `derive_sigma_y=False`
-
-So the current user-facing product expects the user to provide already-prepared `y` and `sigma_y` columns.
-
-This is an intentional simplification: the app is currently positioned as a plotting and analysis tool, not an uncertainty-propagation calculator.
+This is an intentional simplification: Graphik is positioned as a plotting and analysis tool, not as a preprocessing or uncertainty-propagation calculator.
 
 ---
 
@@ -227,19 +215,13 @@ State persistence is implemented in [src/ui_state.py](D:\grafiken\src\ui_state.p
 
 ### 5.1 What is persisted
 
-The app stores picklable values from `st.session_state` in:
-- `.streamlit/last_session_state.pkl`
+Graphik now separates persisted state into two files:
 
-Persisted examples include:
+- `.streamlit/user_prefs.json`
+  Stores explicit user preferences such as language, mode-specific visual settings, export presets, label choices, and other namespaced UI preferences.
 
-- mode selection
-- language
-- column mappings
-- label strings
-- grid settings
-- font settings
-- export settings
-- plot info box settings
+- `.streamlit/last_runtime_state.pkl`
+  Stores only lightweight runtime state that is worth restoring, currently the last active table and its upload signature.
 
 ### 5.2 What is deliberately not persisted
 
@@ -247,12 +229,13 @@ The persistence layer excludes:
 
 - non-assignable Streamlit widget keys such as `table_editor`
 - transient export caches whose keys start with `_export_cache_`
+- internal `_prefs` helper objects
 - non-picklable data
 
 This prevents two common Streamlit failure modes:
 
 - writing to a widget key after instantiation
-- persisting large export byte arrays into long-lived session snapshots
+- persisting large export byte arrays or stale runtime artifacts into long-lived state files
 
 ---
 
@@ -1032,21 +1015,17 @@ These are not bugs, but deliberate choices that may be worth expert review.
    - improves export stability
    - but requires a translation layer and therefore constant synchronization effort
 
-2. UI-level simplification of uncertainty derivation
-   - easier for users
-   - but the codebase still contains latent derivation paths not currently used in the UI
-
-3. Strict centroid error-line method retained
+2. Strict centroid error-line method retained
    - mathematically defensible
    - but often unusable for real data
 
-4. Auto-placement of the plot info box
+3. Auto-placement of the plot info box
    - better than fixed placement in many cases
    - but still heuristic and not guaranteed optimal for every dataset
 
-5. Session snapshot persistence
+4. State persistence
    - improves usability
-   - but adds state complexity and requires careful exclusion of transient widget/export values
+   - but adds state complexity and requires careful separation between user preferences and runtime state
 
 ---
 
@@ -1056,11 +1035,10 @@ If this document is being sent to an expert reviewer, the most useful questions 
 
 1. Is the current separation between Plotly preview and Matplotlib export the right long-term architecture?
 2. Is the standard endpoint method the right default for subjective error lines in the target domain?
-3. Should the currently dormant y/sigma derivation functionality be removed completely or reintroduced as an optional preprocessing module?
-4. Are the current heuristics for plot-info-box placement acceptable, or should that subsystem become fully manual?
-5. Is the current approach to semilog paper rendering sufficiently faithful for teaching/lab usage?
-6. Are there additional export invariants that should be enforced by tests, especially regarding typography and legend placement?
-7. Is there a cleaner abstraction that could further reduce divergence risk between preview and export?
+3. Are the current heuristics for plot-info-box placement acceptable, or should that subsystem become fully manual?
+4. Is the current approach to semilog paper rendering sufficiently faithful for teaching/lab usage?
+5. Are there additional export invariants that should be enforced by tests, especially regarding typography and legend placement?
+6. Is there a cleaner abstraction that could further reduce divergence risk between preview and export?
 
 ---
 
@@ -1097,3 +1075,24 @@ That is the current implemented mechanism of Graphik.
 ## Export backend support contract
 
 The Matplotlib export backend intentionally supports only a defined subset of preview features: scatter traces with markers/lines and optional error bars, vertical bar traces, shape types line/rect/circle, text annotations without arrows, and linear/log x/y axes. If a preview figure contains unsupported elements, export now fails fast with a clear "unsupported feature in export backend" validation message instead of silently generating an incomplete artifact.
+
+## Official known limitations
+
+### Works especially well
+- Generic x-y plots with explicit `x`, `y`, and optional `sigma_y` columns
+- Linear and exponential overlays within the supported export contract
+- Statistics mode with histogram, Gaussian overlay, and sigma markers
+- Export to PNG, SVG, and PDF for supported figure types
+
+### Experimental or heuristic
+- Subjective error-line workflows, especially the strict centroid method
+- Automatic placement and wrapping of the on-plot info box on dense figures
+- Semilog-paper style grid emulation, which is approximate by design
+- Exact preview/export visual parity for unusual styling combinations outside the tested presets
+
+### Not supported in the export backend
+- Plotly trace types outside the current contract, such as pie charts
+- Scatter fill modes and text-only scatter rendering
+- Horizontal bar traces
+- Shape types beyond `line`, `rect`, and `circle`
+- Annotation arrows in export

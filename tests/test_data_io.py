@@ -70,7 +70,7 @@ def test_sanitize_dataframe_renames_fully_unnamed_columns() -> None:
         columns=["Unnamed: 0", "Unnamed: 1", "Unnamed: 2", "Unnamed: 3", "Unnamed: 4"],
     )
     out = sanitize_dataframe(source)
-    assert list(out.columns) == ["m", "T_mean", "sigma_T", "y", "sigma_y"]
+    assert list(out.columns) == ["x", "y", "sigma_y", "col_4", "col_5"]
 
 
 def test_sanitize_dataframe_promotes_first_text_row_to_headers() -> None:

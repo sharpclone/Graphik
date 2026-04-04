@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
+import traceback
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
-import hashlib
-import json
 from pathlib import Path
-import traceback
 from typing import Any, Literal
 
 import numpy as np
@@ -22,11 +23,75 @@ from .export_utils import (
     scale_figure_for_export,
     scaled_text_font_size_for_export,
 )
-from .plotting import figure_to_image_bytes
+from .logging_utils import log_event, runtime_mode
 from .mpl_export import supported_export_contract_lines
+from .plotting import figure_to_image_bytes
 
 ExportFormat = Literal["png", "svg", "pdf"]
 EXPORT_DEBUG_DIR = Path(".streamlit") / "export_debug"
+
+LOGGER = logging.getLogger('graphik.export')
+
+
+EXPORT_PRESETS: dict[str, dict[str, object]] = {
+    "custom": {},
+    "word_report": {
+        "paper": "A4",
+        "orientation": "portrait",
+        "dpi": 220,
+        "raster_scale": 1.0,
+        "visual_scale": 1.0,
+        "target_text_pt": 12.0,
+        "autoscale_axes": True,
+    },
+    "a4_print": {
+        "paper": "A4",
+        "orientation": "landscape",
+        "dpi": 300,
+        "raster_scale": 1.0,
+        "visual_scale": 1.0,
+        "target_text_pt": 14.0,
+        "autoscale_axes": True,
+    },
+    "svg_publication": {
+        "paper": "A4",
+        "orientation": "landscape",
+        "dpi": 300,
+        "raster_scale": 1.0,
+        "visual_scale": 1.0,
+        "target_text_pt": 11.0,
+        "autoscale_axes": False,
+    },
+    "fast_preview": {
+        "paper": "A5",
+        "orientation": "landscape",
+        "dpi": 144,
+        "raster_scale": 1.0,
+        "visual_scale": 1.0,
+        "target_text_pt": 12.0,
+        "autoscale_axes": False,
+    },
+}
+
+
+def _export_preset_settings(name: str) -> dict[str, object]:
+    return dict(EXPORT_PRESETS.get(name, {}))
+
+
+def _resolved_export_config(config: "ExportConfig") -> dict[str, object]:
+    base = {
+        "base_name": config.base_name,
+        "paper": config.paper,
+        "orientation": config.orientation,
+        "dpi": config.dpi,
+        "raster_scale": config.raster_scale,
+        "visual_scale": config.visual_scale,
+        "target_text_pt": config.target_text_pt,
+        "autoscale_axes": config.autoscale_axes,
+        "preset_name": config.preset_name,
+        "show_clean_export_preview": config.show_clean_export_preview,
+    }
+    return base
 
 
 @dataclass(frozen=True)
@@ -41,6 +106,8 @@ class ExportConfig:
     visual_scale: float
     target_text_pt: float | None
     autoscale_axes: bool = False
+    preset_name: str = "custom"
+    show_clean_export_preview: bool = False
 
     def canvas_size_px(self) -> tuple[int, int]:
         """Return target export canvas size in pixels."""
@@ -99,12 +166,25 @@ def render_export_settings(
 
     st.header(translate("export.sidebar_header"))
     st.caption(translate("export.support_contract", contract="; ".join(supported_export_contract_lines())))
+    preset_name = st.selectbox(
+        translate("export.preset"),
+        options=list(EXPORT_PRESETS.keys()),
+        index=0,
+        key=_key("export_preset"),
+        format_func=lambda value: translate(f"export_preset.{value}"),
+    )
+    preset = _export_preset_settings(preset_name)
+    manual_enabled = preset_name == "custom"
+    if not manual_enabled:
+        st.caption(translate("export.preset_caption", preset=translate(f"export_preset.{preset_name}")))
+
     base_name = st.text_input(translate("export.filename_prefix"), value=default_base_name, key=_key("export_base"))
     paper = st.selectbox(
         translate("export.paper_size"),
         options=["A4", "A5", "Letter"],
         index=0,
         key=_key("png_paper"),
+        disabled=not manual_enabled,
     )
     orientation = st.selectbox(
         translate("export.orientation"),
@@ -112,6 +192,7 @@ def render_export_settings(
         index=1,
         key=_key("png_orientation"),
         format_func=lambda value: translate(f"orientation.{value}"),
+        disabled=not manual_enabled,
     )
     dpi = int(
         st.number_input(
@@ -121,6 +202,7 @@ def render_export_settings(
             value=300,
             step=1,
             key=_key("png_dpi"),
+            disabled=not manual_enabled,
         )
     )
     raster_scale = float(
@@ -131,6 +213,7 @@ def render_export_settings(
             value=1.0,
             step=0.1,
             key=_key("png_scale"),
+            disabled=not manual_enabled,
         )
     )
     word_like_text = bool(
@@ -138,6 +221,7 @@ def render_export_settings(
             translate("export.word_like_text"),
             value=True,
             key=_key("png_word_like"),
+            disabled=not manual_enabled,
         )
     )
     target_text_pt = float(
@@ -147,7 +231,7 @@ def render_export_settings(
             max_value=36.0,
             value=14.0,
             step=0.5,
-            disabled=not word_like_text,
+            disabled=(not word_like_text) or (not manual_enabled),
             key=_key("png_text_pt"),
         )
     )
@@ -159,6 +243,7 @@ def render_export_settings(
             value=1.0,
             step=0.1,
             key=_key("png_visual_scale"),
+            disabled=not manual_enabled,
         )
     )
     autoscale_axes = False
@@ -169,10 +254,29 @@ def render_export_settings(
                 value=True,
                 key=_key("autoscale_export_axes"),
                 help=translate("export.autoscale_help"),
+                disabled=not manual_enabled,
             )
         )
+    show_clean_export_preview = bool(
+        st.checkbox(
+            translate("export.clean_preview"),
+            value=False,
+            key=_key("show_clean_export_preview"),
+            help=translate("export.clean_preview_help"),
+        )
+    )
 
-    return ExportConfig(
+    if not manual_enabled:
+        paper = str(preset.get("paper", paper))
+        orientation = str(preset.get("orientation", orientation))
+        dpi = _coerce_int(preset.get("dpi", dpi), field_name="export preset dpi")
+        raster_scale = _coerce_float(preset.get("raster_scale", raster_scale), field_name="export preset raster_scale")
+        visual_scale = _coerce_float(preset.get("visual_scale", visual_scale), field_name="export preset visual_scale")
+        target_text_pt = _coerce_float(preset.get("target_text_pt", target_text_pt), field_name="export preset target_text_pt")
+        autoscale_axes = bool(preset.get("autoscale_axes", autoscale_axes))
+        word_like_text = target_text_pt is not None
+
+    config = ExportConfig(
         base_name=base_name,
         paper=paper,
         orientation=orientation,
@@ -181,7 +285,35 @@ def render_export_settings(
         visual_scale=visual_scale,
         target_text_pt=target_text_pt if word_like_text else None,
         autoscale_axes=autoscale_axes,
+        preset_name=preset_name,
+        show_clean_export_preview=show_clean_export_preview,
     )
+    preset_json = json.dumps(_resolved_export_config(config), indent=2, sort_keys=True)
+    st.download_button(
+        translate("export.download_preset"),
+        data=preset_json.encode("utf-8"),
+        file_name=f"{config.base_name or 'graphik'}_export_preset.json",
+        mime="application/json",
+        use_container_width=True,
+        key=_key("download_export_preset"),
+    )
+    return config
+
+
+def _coerce_int(value: object, *, field_name: str) -> int:
+    if isinstance(value, bool):
+        raise ExportValidationError(f"Export validation failed: {field_name} must be numeric, not boolean.")
+    if isinstance(value, (int, float, str)):
+        return int(value)
+    raise ExportValidationError(f"Export validation failed: {field_name} is not numeric.")
+
+
+def _coerce_float(value: object, *, field_name: str) -> float:
+    if isinstance(value, bool):
+        raise ExportValidationError(f"Export validation failed: {field_name} must be numeric, not boolean.")
+    if isinstance(value, (int, float, str)):
+        return float(value)
+    raise ExportValidationError(f"Export validation failed: {field_name} is not numeric.")
 
 
 def _json_default(value: object) -> object:
@@ -507,10 +639,24 @@ def write_export_debug_report(
 def prepare_export_bytes(request: ExportRequest, fmt: ExportFormat, build_base_figure: FigureBuilder) -> bytes:
     """Build, validate, and render one export artifact."""
     export_figure: go.Figure | None = None
+    width, height = request.config.canvas_size_px()
+    log_context = {
+        "mode": request.mode,
+        "format": fmt,
+        "figure_width": width,
+        "figure_height": height,
+        "dpi": int(request.config.dpi),
+        "paper": request.config.paper,
+        "orientation": request.config.orientation,
+        "autoscale": bool(request.config.autoscale_axes),
+        "trace_count": len(request.preview_figure.data),
+        "y_axis_type": str(getattr(request.preview_figure.layout.yaxis, 'type', 'linear')),
+        "packaged": runtime_mode() == 'packaged',
+    }
+    log_event(LOGGER, logging.INFO, 'export_prepare_started', **log_context)
     try:
         export_figure = build_export_figure(request, build_base_figure)
-        width, height = request.config.canvas_size_px()
-        return figure_to_image_bytes(
+        export_bytes = figure_to_image_bytes(
             export_figure,
             fmt,
             width=width,
@@ -518,11 +664,15 @@ def prepare_export_bytes(request: ExportRequest, fmt: ExportFormat, build_base_f
             scale=request.config.scale_for_format(fmt),
             base_dpi=int(request.config.dpi),
         )
+        log_event(LOGGER, logging.INFO, 'export_prepare_succeeded', byte_count=len(export_bytes), **log_context)
+        return export_bytes
     except ExportValidationError as exc:
         report_path = write_export_debug_report(request, fmt, exc, traceback.format_exc(), export_figure)
+        log_event(LOGGER, logging.ERROR, 'export_prepare_validation_failed', error=str(exc), report_path=report_path, **log_context)
         raise ExportValidationError(f"{exc} Debug report: {report_path}", report_path=report_path) from exc
     except Exception as exc:  # pragma: no cover - defensive boundary around renderer stack
         report_path = write_export_debug_report(request, fmt, exc, traceback.format_exc(), export_figure)
+        log_event(LOGGER, logging.ERROR, 'export_prepare_render_failed', error=str(exc), report_path=report_path, **log_context)
         raise ExportRenderError(
             f"Export render failed for {fmt.upper()}. Debug report: {report_path}",
             report_path=report_path,

@@ -1,15 +1,16 @@
-"""Numerical calculations for fits, uncertainties, and derived quantities."""
+"""Numerical calculations for fits, uncertainties, and plotting analysis."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-import ast
-import math
 from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 from scipy import stats
 from scipy.optimize import linprog
+
+FloatArray = npt.NDArray[np.float64]
 
 
 @dataclass(frozen=True)
@@ -36,7 +37,7 @@ class ErrorLineResult:
     delta_k: float
 
 
-def _as_1d_float_array(values: Any, name: str) -> np.ndarray:
+def _as_1d_float_array(values: Any, name: str) -> FloatArray:
     """Convert input values to a finite 1D float numpy array."""
     array = np.asarray(values, dtype=float)
     if array.ndim != 1:
@@ -45,7 +46,7 @@ def _as_1d_float_array(values: Any, name: str) -> np.ndarray:
         raise ValueError(f"{name} must not be empty.")
     if not np.all(np.isfinite(array)):
         raise ValueError(f"{name} contains non-finite values.")
-    return array
+    return np.asarray(array, dtype=np.float64)
 
 
 def _validate_same_length(*arrays: np.ndarray) -> None:
@@ -53,22 +54,6 @@ def _validate_same_length(*arrays: np.ndarray) -> None:
     lengths = {arr.size for arr in arrays}
     if len(lengths) != 1:
         raise ValueError("All input arrays must have the same length.")
-
-
-def compute_y_from_t(t_mean: Any) -> np.ndarray:
-    """Compute y = T^2 from mean period values T."""
-    t_arr = _as_1d_float_array(t_mean, "T_mean")
-    return t_arr**2
-
-
-def compute_sigma_y_from_t(t_mean: Any, sigma_t: Any) -> np.ndarray:
-    """Compute propagated uncertainty sigma_y = 2 * T * sigma_T for y = T^2."""
-    t_arr = _as_1d_float_array(t_mean, "T_mean")
-    sigma_t_arr = _as_1d_float_array(sigma_t, "sigma_T")
-    _validate_same_length(t_arr, sigma_t_arr)
-    if np.any(sigma_t_arr < 0):
-        raise ValueError("sigma_T must be non-negative.")
-    return 2.0 * t_arr * sigma_t_arr
 
 
 def linear_regression(x: Any, y: Any) -> LinearFitResult:
@@ -108,7 +93,7 @@ def exponential_regression(x: Any, y: Any) -> LinearFitResult:
 def logarithmic_transform_with_uncertainty(
     y: Any,
     sigma_y: Any,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[FloatArray, FloatArray]:
     """
     Convert y and sigma_y to log-space for semilog line/error analysis.
 
@@ -344,77 +329,3 @@ def protocol_endpoint_error_lines(x: Any, y: Any, sigma_y: Any) -> ErrorLineResu
 def format_final_slope(k_fit: float, delta_k: float, precision: int = 6) -> str:
     """Return formatted slope with uncertainty."""
     return f"a = {k_fit:.{precision}g} ± {delta_k:.{precision}g}"
-
-
-_ALLOWED_FUNCTIONS: dict[str, Any] = {
-    "sqrt": math.sqrt,
-    "sin": math.sin,
-    "cos": math.cos,
-    "tan": math.tan,
-    "exp": math.exp,
-    "log": math.log,
-    "abs": abs,
-}
-
-_ALLOWED_CONSTANTS: dict[str, float] = {
-    "pi": math.pi,
-    "e": math.e,
-}
-
-_ALLOWED_NODES = (
-    ast.Expression,
-    ast.BinOp,
-    ast.UnaryOp,
-    ast.Add,
-    ast.Sub,
-    ast.Mult,
-    ast.Div,
-    ast.Pow,
-    ast.Mod,
-    ast.UAdd,
-    ast.USub,
-    ast.Name,
-    ast.Load,
-    ast.Call,
-    ast.Constant,
-)
-
-
-def evaluate_derived_expression(expression: str, variables: dict[str, float]) -> float:
-    """Safely evaluate a derived quantity expression from scalar variables."""
-    if not expression.strip():
-        raise ValueError("Expression must not be empty.")
-
-    try:
-        node = ast.parse(expression, mode="eval")
-    except SyntaxError as exc:
-        raise ValueError(f"Invalid expression syntax: {exc}") from exc
-
-    for subnode in ast.walk(node):
-        if not isinstance(subnode, _ALLOWED_NODES):
-            raise ValueError(f"Unsupported syntax in expression: {type(subnode).__name__}")
-        if isinstance(subnode, ast.Call):
-            if not isinstance(subnode.func, ast.Name):
-                raise ValueError("Only direct function calls are allowed.")
-            if subnode.func.id not in _ALLOWED_FUNCTIONS:
-                raise ValueError(f"Unsupported function: {subnode.func.id}")
-        if isinstance(subnode, ast.Name):
-            if (
-                subnode.id not in variables
-                and subnode.id not in _ALLOWED_FUNCTIONS
-                and subnode.id not in _ALLOWED_CONSTANTS
-            ):
-                raise ValueError(f"Unknown variable: {subnode.id}")
-
-    safe_locals: dict[str, Any] = {}
-    safe_locals.update(_ALLOWED_FUNCTIONS)
-    safe_locals.update(_ALLOWED_CONSTANTS)
-    safe_locals.update(variables)
-
-    compiled = compile(node, filename="<derived_expression>", mode="eval")
-    result = eval(compiled, {"__builtins__": {}}, safe_locals)
-
-    try:
-        return float(result)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("Expression did not evaluate to a scalar number.") from exc

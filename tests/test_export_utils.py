@@ -2,20 +2,28 @@
 
 from __future__ import annotations
 
+import plotly.graph_objects as go
+import pytest
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 from matplotlib.ticker import MultipleLocator
-import plotly.graph_objects as go
-
-from src.mpl_export import _apply_layout, _draw_annotations, _draw_legend, _draw_traces, _ensure_export_decorations_fit, _soften_grid_style
-from src.plotting import figure_to_image_bytes
 
 from src.export_utils import (
     PlotTextBlockLayout,
     add_plot_text_block,
+    autoscale_figure_to_data,
     scale_figure_for_export,
     scaled_text_font_size_for_export,
 )
+from src.mpl_export import (
+    _apply_layout,
+    _draw_annotations,
+    _draw_legend,
+    _draw_traces,
+    _ensure_export_decorations_fit,
+    _soften_grid_style,
+)
+from src.plotting import figure_to_image_bytes
 
 
 def test_scale_figure_for_export_handles_bar_traces_without_marker_size() -> None:
@@ -327,3 +335,82 @@ def test_soften_grid_style_lightens_export_gridlines() -> None:
 
     assert minor_color[3] < 0.16
     assert minor_width < 0.6
+
+
+def test_autoscale_figure_to_data_includes_visible_trace_shape_and_annotation_extents() -> None:
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=[0.0, 1.0], y=[1.0, 2.0], mode="markers", name="data"))
+    fig.add_trace(go.Scatter(x=[-5.0, 5.0], y=[0.5, 10.0], mode="lines", name="fit"))
+    fig.add_shape(type="line", xref="x", yref="y", x0=-6.0, x1=6.0, y0=-1.0, y1=11.0)
+    fig.add_annotation(x=6.5, y=11.5, xref="x", yref="y", text="edge", showarrow=False)
+
+    autoscaled = autoscale_figure_to_data(
+        fig,
+        x_values=[0.0, 1.0],
+        y_values=[1.0, 2.0],
+        sigma_y_values=[0.0, 0.0],
+        y_axis_type="linear",
+    )
+
+    x_range = list(autoscaled.layout.xaxis.range)
+    y_range = list(autoscaled.layout.yaxis.range)
+    assert x_range[0] <= -6.0
+    assert x_range[1] >= 6.5
+    assert y_range[0] <= -1.0
+    assert y_range[1] >= 11.5
+
+
+def test_autoscale_figure_to_data_snaps_linear_range_to_major_tick_grid() -> None:
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=[0.0, 10.0], y=[1.0, 2.0], mode="markers", name="data"))
+    fig.update_xaxes(dtick=0.2, tick0=0.0)
+
+    autoscaled = autoscale_figure_to_data(
+        fig,
+        x_values=[0.0, 10.0],
+        y_values=[1.0, 2.0],
+        sigma_y_values=[0.0, 0.0],
+        y_axis_type="linear",
+    )
+
+    x_range = list(autoscaled.layout.xaxis.range)
+    assert x_range[0] == pytest.approx(-0.6)
+    assert x_range[1] == pytest.approx(10.6)
+
+
+def test_autoscale_figure_to_data_keeps_linear_bar_charts_at_zero_baseline() -> None:
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=[1.0, 2.0, 3.0], y=[1.0, 2.0, 3.0], name="Histogram"))
+    fig.add_trace(go.Scatter(x=[1.0, 2.0, 3.0], y=[0.4, 2.6, 0.5], mode="lines", name="Fit"))
+
+    autoscaled = autoscale_figure_to_data(
+        fig,
+        x_values=[],
+        y_values=[],
+        sigma_y_values=[],
+        y_axis_type="linear",
+    )
+
+    y_range = list(autoscaled.layout.yaxis.range)
+    assert y_range[0] == pytest.approx(0.0)
+    assert y_range[1] > 3.0
+
+
+def test_autoscale_figure_to_data_preserves_explicit_x_and_y_ranges_when_requested() -> None:
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=[0.0, 10.0], y=[1.0, 2.0], mode="markers", name="data"))
+    fig.update_xaxes(range=[2.0, 8.0])
+    fig.update_yaxes(range=[0.5, 2.5])
+
+    autoscaled = autoscale_figure_to_data(
+        fig,
+        x_values=[0.0, 10.0],
+        y_values=[1.0, 2.0],
+        sigma_y_values=[0.0, 0.0],
+        y_axis_type="linear",
+        preserve_x_range=True,
+        preserve_y_range=True,
+    )
+
+    assert list(autoscaled.layout.xaxis.range) == [2.0, 8.0]
+    assert list(autoscaled.layout.yaxis.range) == [0.5, 2.5]

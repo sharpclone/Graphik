@@ -1,4 +1,4 @@
-"""Unit tests for UI-facing math-label normalization."""
+﻿"""Unit tests for UI-facing math-label normalization."""
 
 from __future__ import annotations
 
@@ -11,6 +11,10 @@ def test_to_plot_math_text_keeps_plain_text_without_math_markup() -> None:
 
 def test_to_plot_math_text_converts_delta_macro() -> None:
     assert to_plot_math_text(r"\Delta m [g]", True) == "Δ m [g]"
+
+
+def test_to_plot_math_text_converts_sigma_macro_with_subscript() -> None:
+    assert to_plot_math_text(r"\sigma_T", True) == "σ<sub>T</sub>"
 
 
 def test_to_plot_math_text_converts_subscript_and_superscript() -> None:
@@ -28,3 +32,15 @@ def test_prettify_plot_text_handles_mixed_expression() -> None:
 
 def test_to_plot_math_text_returns_raw_input_when_disabled() -> None:
     assert to_plot_math_text(r"\sigma_T", False) == r"\sigma_T"
+
+
+def test_to_plot_math_text_converts_r_squared() -> None:
+    assert to_plot_math_text("R^2", True) == "R<sup>2</sup>"
+
+
+def test_to_plot_math_text_converts_r_squared_with_suffix() -> None:
+    assert to_plot_math_text("R^2(ln y) = 0.5", True) == "R<sup>2</sup>(ln y) = 0.5"
+
+
+def test_to_plot_math_text_preserves_unicode_math_symbols() -> None:
+    assert to_plot_math_text("Δm = ±1", True) == "Δm = ±1"

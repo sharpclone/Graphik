@@ -4,8 +4,8 @@
 
 # Graphik
 ###### By Mihai Cazac
-Graphik is a local Streamlit app for creating clean scientific plots for lab reports.
-It is designed for workflows with measurement tables, error bars, best-fit lines, error lines, slope triangles, and export-ready figures.
+Graphik is a local Streamlit app for creating clean scientific plots from tabular data.
+It is designed for workflows with measurement tables, error bars, fit lines, subjective error lines, slope triangles, descriptive statistics, and export-ready figures.
 
 ## Features
 
@@ -26,7 +26,6 @@ It is designed for workflows with measurement tables, error bars, best-fit lines
 ## Dashboard
 
 ![Graphik dashboard](Present/Dashboard.png)
-
 
 
 ## Standard Install (recommended)

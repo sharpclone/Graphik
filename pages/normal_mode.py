@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from collections.abc import Callable
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 
-from pages.common import render_font_controls, render_plot_info_box_controls
+from pages.common import (
+    render_font_controls,
+    render_plot_info_box_controls,
+    render_plot_info_box_status,
+    render_problem_list,
+)
 from services.analysis_service import build_normal_analysis_result, build_normal_summary_text
-from services.export_service import ExportRequest, render_export_buttons, render_export_settings
+from services.export_service import ExportRequest, build_export_figure, render_export_buttons, render_export_settings
+from services.validation_service import collect_normal_mode_problems, has_blocking_problems, suggest_column_mapping
 from src.config import DEFAULT_ERROR_LINE_COLOR, DEFAULT_FIT_COLOR
 from src.data_io import dataframe_to_csv_bytes
 from src.mode_models import NormalModeConfig
@@ -24,17 +30,23 @@ from src.ui_helpers import (
 )
 
 NORMAL_PREFIX = "normal."
+TranslateFn = Callable[..., str]
 
 
 def _k(name: str) -> str:
     return f"{NORMAL_PREFIX}{name}"
 
 
-def render_normal_controls(edited_df: pd.DataFrame, columns: list[str], translate) -> NormalModeConfig:
+def render_normal_controls(
+    edited_df: pd.DataFrame,
+    columns: list[str],
+    translate: TranslateFn,
+) -> NormalModeConfig:
     """Render the normal-mode sidebar controls and return a typed config object."""
     none_option = "<None>"
     with st.sidebar:
         st.header(translate("mapping.header"))
+        suggested_x, suggested_y, suggested_sigma, _ = suggest_column_mapping(columns)
         mapping_mode = st.radio(
             translate("mapping.mode"),
             options=["simple", "advanced"],
@@ -45,21 +57,21 @@ def render_normal_controls(edited_df: pd.DataFrame, columns: list[str], translat
         use_zero_error = bool(st.checkbox(translate("mapping.no_error_column"), value=False, key=_k("use_zero_error")))
         if mapping_mode == "simple":
             st.caption(translate("mapping.simple_caption"))
-            x_col = st.selectbox(translate("mapping.x_column"), options=columns, index=safe_default_index(columns, "m"), key=_k("x_col_simple"))
-            y_col = st.selectbox(translate("mapping.y_column"), options=columns, index=safe_default_index(columns, "y", fallback=safe_default_index(columns, "T_mean")), key=_k("y_col_simple"))
+            x_col = st.selectbox(translate("mapping.x_column"), options=columns, index=safe_default_index(columns, suggested_x or "x"), key=_k("x_col_simple"))
+            y_col = st.selectbox(translate("mapping.y_column"), options=columns, index=safe_default_index(columns, suggested_y or "y", fallback=min(1, len(columns) - 1)), key=_k("y_col_simple"))
             if use_zero_error:
                 sigma_y_col = none_option
                 st.caption(translate("mapping.vertical_unc_disabled"))
             else:
-                sigma_y_col = st.selectbox(translate("mapping.error_column"), options=columns, index=safe_default_index(columns, "sigma_y", fallback=safe_default_index(columns, "sigma_T")), key=_k("sigma_col_simple"))
+                sigma_y_col = st.selectbox(translate("mapping.error_column"), options=columns, index=safe_default_index(columns, suggested_sigma or "sigma_y", fallback=min(2, len(columns) - 1)), key=_k("sigma_col_simple"))
         else:
-            x_col = st.selectbox(translate("mapping.x_column"), options=columns, index=safe_default_index(columns, "m"), key=_k("x_col_adv"))
-            y_col = st.selectbox(translate("mapping.y_column"), options=columns, index=safe_default_index(columns, "y", fallback=safe_default_index(columns, "T_mean")), key=_k("y_col_adv"))
+            x_col = st.selectbox(translate("mapping.x_column"), options=columns, index=safe_default_index(columns, suggested_x or "x"), key=_k("x_col_adv"))
+            y_col = st.selectbox(translate("mapping.y_column"), options=columns, index=safe_default_index(columns, suggested_y or "y", fallback=min(1, len(columns) - 1)), key=_k("y_col_adv"))
             if use_zero_error:
                 sigma_y_col = none_option
                 st.caption(translate("mapping.vertical_unc_disabled"))
             else:
-                sigma_y_col = st.selectbox(translate("mapping.sigma_y_column"), options=columns, index=safe_default_index(columns, "sigma_y", fallback=safe_default_index(columns, "sigma_T")), key=_k("sigma_y_col_adv"))
+                sigma_y_col = st.selectbox(translate("mapping.sigma_y_column"), options=columns, index=safe_default_index(columns, suggested_sigma or "sigma_y", fallback=min(2, len(columns) - 1)), key=_k("sigma_y_col_adv"))
 
         st.header(translate("plot_settings.header"))
         use_math_text = bool(st.checkbox(translate("plot_settings.use_latex"), value=True, key=_k("use_latex_plot"), help=translate("plot_settings.use_latex_help")))
@@ -135,9 +147,22 @@ def render_normal_controls(edited_df: pd.DataFrame, columns: list[str], translat
 
         st.header(translate("lines.header"))
         fit_model = st.selectbox(translate("lines.fit_equation"), options=["linear", "exp"], format_func=lambda item: translate(f"fit_model.{item}"), index=1 if y_scale_mode == "log" else 0, key=_k("fit_model"), help=translate("fit_model.help"))
+        selected_y = pd.to_numeric(edited_df[y_col], errors="coerce").dropna().to_numpy(dtype=float)
+        if fit_model == "exp" and selected_y.size and np.any(selected_y <= 0):
+            st.caption(translate("validation.exp_unavailable_detail"))
+        if y_scale_mode == "log" and selected_y.size and np.any(selected_y <= 0):
+            st.caption(translate("validation.log_axis_detail"))
         current_error_mode = str(st.session_state.get(_k("error_line_mode_widget"), "protocol"))
         show_fit_line = bool(st.checkbox(translate("lines.show_fit_line"), value=True, key=_k("show_fit_line"), help=fit_line_help_text(fit_model, lang=str(st.session_state.get("language", "de")))))
         show_error_lines = bool(st.checkbox(translate("lines.show_error_lines"), value=True, key=_k("show_error_lines"), help=error_line_help_text(fit_model, current_error_mode, lang=str(st.session_state.get("language", "de")))))
+        extrapolate_lines = bool(
+            st.checkbox(
+                translate("lines.extrapolate_lines"),
+                value=True,
+                key=_k("extrapolate_lines"),
+                help=translate("lines.extrapolate_lines_help"),
+            )
+        )
         error_line_mode = st.selectbox(translate("lines.error_method"), options=["protocol", "centroid"], format_func=lambda item: translate(f"error_method.{item}"), index=0, key=_k("error_line_mode_widget"), help=translate("error_method.help"))
         auto_line_labels_enabled = bool(st.checkbox(translate("lines.auto_line_labels"), value=True, key=_k("auto_line_labels")))
         fit_label_auto, error_label_max_auto, error_label_min_auto = auto_line_labels(error_line_mode, lang=str(st.session_state.get("language", "de")))
@@ -175,7 +200,7 @@ def render_normal_controls(edited_df: pd.DataFrame, columns: list[str], translat
         show_error_slope_label = bool(st.checkbox(translate("lines.show_error_slope_label"), value=True, key=_k("show_error_slope_label")))
 
         st.header(translate("triangles.header"))
-        show_fit_triangle = bool(st.checkbox(translate("triangles.show_fit"), value=True, key=_k("show_fit_triangle")))
+        show_fit_triangle = bool(st.checkbox(translate("triangles.show_fit"), value=False, key=_k("show_fit_triangle")))
         auto_fit_points = bool(st.checkbox(translate("triangles.auto_points"), value=True, key=_k("auto_fit_points")))
         dx_symbol, dy_symbol = auto_triangle_delta_symbols(x_label, y_label)
         st.caption(translate("triangles.auto_labels", dx=dx_symbol, dy=dy_symbol))
@@ -188,7 +213,7 @@ def render_normal_controls(edited_df: pd.DataFrame, columns: list[str], translat
             st.write(translate("runtime.custom_ab_caption"))
             custom_fit_x_a = float(st.number_input("A_x", value=float(x_min_default + 0.15 * (x_max_default - x_min_default)), format="%.6f", key=_k("fit_custom_ax")))
             custom_fit_x_b = float(st.number_input("B_x", value=float(x_min_default + 0.85 * (x_max_default - x_min_default)), format="%.6f", key=_k("fit_custom_bx")))
-        show_error_triangles = bool(st.checkbox(translate("triangles.show_error"), value=True, key=_k("show_error_triangles")))
+        show_error_triangles = bool(st.checkbox(translate("triangles.show_error"), value=False, key=_k("show_error_triangles")))
         triangle_x_decimals = int(st.number_input(translate("triangles.dx_decimals"), min_value=0, max_value=8, value=1, step=1, key=_k("triangle_x_decimals")))
         triangle_y_decimals = int(st.number_input(translate("triangles.dy_decimals"), min_value=0, max_value=8, value=2, step=1, key=_k("triangle_y_decimals")))
 
@@ -225,6 +250,7 @@ def render_normal_controls(edited_df: pd.DataFrame, columns: list[str], translat
         fit_model=fit_model,
         show_fit_line=show_fit_line,
         show_error_lines=show_error_lines,
+        extrapolate_lines=extrapolate_lines,
         error_line_mode=error_line_mode,
         fit_label=fit_label,
         fit_color=fit_color,
@@ -248,9 +274,18 @@ def render_normal_controls(edited_df: pd.DataFrame, columns: list[str], translat
     )
 
 
-def render_normal_mode(edited_df: pd.DataFrame, columns: list[str], translate) -> dict[str, object]:
+def render_normal_mode(
+    edited_df: pd.DataFrame,
+    columns: list[str],
+    translate: TranslateFn,
+) -> dict[str, object]:
     """Render the full normal mode and return persisted preferences."""
     config = render_normal_controls(edited_df, columns, translate)
+    problems = collect_normal_mode_problems(edited_df, config, translate=translate)
+    render_problem_list(problems, translate)
+    if has_blocking_problems(problems):
+        st.stop()
+
     try:
         result = build_normal_analysis_result(edited_df, config, translate=translate)
     except ValueError as exc:
@@ -264,6 +299,7 @@ def render_normal_mode(edited_df: pd.DataFrame, columns: list[str], translate) -
     with plot_col:
         st.subheader(translate("main.plot"))
         st.plotly_chart(result.plot_contract.preview_figure, use_container_width=True, theme=None)
+        render_plot_info_box_status(result.plot_contract.plot_info_status, translate)
 
     with output_col:
         st.subheader(translate("main.scientific_output"))
@@ -339,6 +375,29 @@ def render_normal_mode(edited_df: pd.DataFrame, columns: list[str], translate) -
         fit_model=config.fit_model,
         translate=translate,
     )
+    if export_config.show_clean_export_preview:
+        try:
+            clean_preview = build_export_figure(
+                ExportRequest(
+                    mode="normal",
+                    cache_prefix="normal_preview",
+                    preview_figure=result.plot_contract.preview_figure,
+                    config=export_config,
+                    plot_info_lines=result.plot_contract.plot_info_lines,
+                    plot_info_box_layout=result.plot_contract.plot_info_box.to_layout(),
+                    plot_info_box_font_size=result.plot_contract.plot_info_box.font_size,
+                    annotation_font_size=result.plot_contract.annotation_font_size,
+                    signature_payload={
+                        "fit_model": config.fit_model,
+                        "preview_kind": "clean_export",
+                    },
+                ),
+                lambda: result.plot_contract.build_export_base_figure(export_config.autoscale_axes),
+            )
+            with st.expander(translate("export.clean_preview_header"), expanded=False):
+                st.plotly_chart(clean_preview, use_container_width=True, theme=None)
+        except Exception as exc:  # pragma: no cover - preview convenience boundary
+            st.info(translate("export.clean_preview_failed", error=exc))
     with export_cols[4]:
         st.download_button(
             translate("export.download_summary_md"),
@@ -416,6 +475,8 @@ def render_normal_mode(edited_df: pd.DataFrame, columns: list[str], translate) -
         _k("triangle_x_decimals"): int(config.triangle_x_decimals),
         _k("triangle_y_decimals"): int(config.triangle_y_decimals),
         _k("export_base"): export_config.base_name,
+        _k("export_preset"): export_config.preset_name,
+        _k("show_clean_export_preview"): bool(export_config.show_clean_export_preview),
         _k("png_paper"): export_config.paper,
         _k("png_orientation"): export_config.orientation,
         _k("png_dpi"): int(export_config.dpi),

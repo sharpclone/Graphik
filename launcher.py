@@ -180,6 +180,7 @@ def main(argv: list[str] | None = None) -> None:
         raise FileNotFoundError(f"Could not find bundled app.py at {app_path}")
 
     os.chdir(root)
+    os.environ.setdefault("GRAPHIK_RUNTIME", "packaged")
     if args.smoke_export_dir:
         run_smoke_export(Path(args.smoke_export_dir))
         return

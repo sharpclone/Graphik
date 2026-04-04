@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import streamlit as st
 
 from src.mode_models import PlotInfoBoxConfig
+from src.ux_models import PlotInfoBoxStatus, ProblemItem
 
-TranslateFn = callable
+TranslateFn = Callable[..., str]
 
 
 @dataclass(frozen=True)
@@ -25,7 +27,65 @@ def _mode_key(prefix: str, name: str) -> str:
     return f"{prefix}{name}" if prefix else name
 
 
-def render_plot_info_box_controls(translate, default_font_size: int, *, key_prefix: str = "") -> PlotInfoBoxConfig:
+def render_problem_list(
+    problems: Sequence[ProblemItem],
+    translate: TranslateFn,
+    *,
+    title_key: str = "validation.problem_list_header",
+) -> None:
+    """Render a consolidated problem list for the current mode."""
+    if not problems:
+        st.success(translate("validation.problem_list_clear"))
+        return
+
+    st.subheader(translate(title_key))
+    severity_order = {"error": 0, "warning": 1, "info": 2, "caption": 3}
+    for problem in sorted(problems, key=lambda item: (severity_order.get(item.severity, 9), item.title)):
+        badge = translate(f"validation.severity.{problem.severity}")
+        line = f"**{badge}: {problem.title}**  \n{problem.detail}"
+        if problem.severity == "error":
+            st.error(line)
+        elif problem.severity == "warning":
+            st.warning(line)
+        elif problem.severity == "info":
+            st.info(line)
+        else:
+            st.caption(f"{badge}: {problem.title} — {problem.detail}")
+
+
+def render_plot_info_box_status(status: PlotInfoBoxStatus | None, translate: TranslateFn) -> None:
+    """Explain how the automatic/manual info-box layout resolved."""
+    if status is None:
+        return
+
+    messages: list[str] = []
+    if status.manual:
+        messages.append(translate("plot_settings.info_box_status_manual", x=f"{status.x:.2f}", y=f"{status.y:.2f}"))
+    else:
+        messages.append(translate("plot_settings.info_box_status_auto", x=f"{status.x:.2f}", y=f"{status.y:.2f}"))
+    if status.downscaled:
+        messages.append(
+            translate(
+                "plot_settings.info_box_status_downscaled",
+                requested=str(status.requested_font_size),
+                final=str(status.final_font_size),
+            )
+        )
+    else:
+        messages.append(translate("plot_settings.info_box_status_kept", size=str(status.final_font_size)))
+    if status.wrapped:
+        messages.append(translate("plot_settings.info_box_status_wrapped", wrap_width=str(status.wrap_width)))
+    else:
+        messages.append(translate("plot_settings.info_box_status_singleline"))
+    st.caption(" • ".join(messages))
+
+
+def render_plot_info_box_controls(
+    translate: TranslateFn,
+    default_font_size: int,
+    *,
+    key_prefix: str = "",
+) -> PlotInfoBoxConfig:
     """Render automatic/manual controls for the plot info box."""
     manual_box = st.checkbox(
         translate("plot_settings.info_box_manual"),
@@ -33,6 +93,7 @@ def render_plot_info_box_controls(translate, default_font_size: int, *, key_pref
         key=_mode_key(key_prefix, "plot_info_box_manual"),
     )
     if not manual_box:
+        st.caption(translate("plot_settings.info_box_auto_caption"))
         return PlotInfoBoxConfig(manual=False, font_size=int(default_font_size))
 
     st.caption(translate("plot_settings.info_box_caption"))
@@ -90,6 +151,7 @@ def render_plot_info_box_controls(translate, default_font_size: int, *, key_pref
             format="%.2f",
         )
     )
+    st.caption(translate("plot_settings.info_box_manual_caption"))
     return PlotInfoBoxConfig(
         manual=True,
         font_size=box_font_size,
@@ -100,7 +162,7 @@ def render_plot_info_box_controls(translate, default_font_size: int, *, key_pref
     )
 
 
-def render_font_controls(translate, *, key_prefix: str = "") -> FontSettings:
+def render_font_controls(translate: TranslateFn, *, key_prefix: str = "") -> FontSettings:
     """Render shared font-size controls and return resolved values."""
     use_separate_font_sizes = st.checkbox(
         translate("plot_settings.separate_fonts"),
@@ -161,3 +223,4 @@ def render_font_controls(translate, *, key_prefix: str = "") -> FontSettings:
         )
     )
     return FontSettings(global_font_size, global_font_size, global_font_size, global_font_size)
+

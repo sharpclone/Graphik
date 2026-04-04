@@ -34,3 +34,7 @@ htmlcov/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Local diagnostic artifacts
+.streamlit/logs/
+.streamlit/code_quality_report.txt

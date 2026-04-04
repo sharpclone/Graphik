@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, MutableMapping
-
 import pandas as pd
 
+from src.session_types import SessionStateLike
 from src.ui_state import (
     MODE_PREFIXES,
     NORMAL_MODE,
@@ -19,7 +18,6 @@ from src.ui_state import (
     restore_session_snapshot,
     save_session_snapshot,
 )
-
 
 LEGACY_KEY_MIGRATIONS: dict[str, tuple[str, ...]] = {
     "use_latex_plot": ("normal.use_latex_plot", "stats.use_latex_plot"),
@@ -68,6 +66,7 @@ LEGACY_KEY_MIGRATIONS: dict[str, tuple[str, ...]] = {
     "fit_model": ("normal.fit_model",),
     "show_fit_line": ("normal.show_fit_line",),
     "show_error_lines": ("normal.show_error_lines",),
+    "extrapolate_lines": ("normal.extrapolate_lines",),
     "error_line_mode_widget": ("normal.error_line_mode_widget",),
     "auto_line_labels": ("normal.auto_line_labels",),
     "fit_label_input": ("normal.fit_label_input",),
@@ -96,7 +95,7 @@ LEGACY_KEY_MIGRATIONS: dict[str, tuple[str, ...]] = {
     "png_word_like": ("normal.png_word_like", "stats.png_word_like"),
     "png_text_pt": ("normal.png_text_pt", "stats.png_text_pt"),
     "png_visual_scale": ("normal.png_visual_scale", "stats.png_visual_scale"),
-    "autoscale_export_axes": ("normal.autoscale_export_axes",),
+    "autoscale_export_axes": ("normal.autoscale_export_axes", "stats.autoscale_export_axes"),
     "stats_column": ("stats.stats_column",),
     "stats_bins": ("stats.stats_bins",),
     "stats_normalize_density": ("stats.stats_normalize_density",),
@@ -116,14 +115,14 @@ LEGACY_KEY_MIGRATIONS: dict[str, tuple[str, ...]] = {
 }
 
 
-def bootstrap_session_state(session_state: MutableMapping[str, Any], sample_dataframe: pd.DataFrame) -> None:
+def bootstrap_session_state(session_state: SessionStateLike, sample_dataframe: pd.DataFrame) -> None:
     """Restore persisted UI state and initialize required defaults."""
     restore_session_snapshot(session_state)
     init_session_state(session_state, sample_dataframe)
 
 
 def normalize_legacy_selection(
-    session_state: MutableMapping[str, Any],
+    session_state: SessionStateLike,
     key: str,
     mapping: dict[str, str] | None = None,
 ) -> None:
@@ -136,7 +135,7 @@ def normalize_legacy_selection(
         session_state[key] = mapping[value]
 
 
-def migrate_legacy_widget_keys(session_state: MutableMapping[str, Any]) -> None:
+def migrate_legacy_widget_keys(session_state: SessionStateLike) -> None:
     """Copy old non-namespaced widget keys into the current mode namespaces once."""
     for legacy_key, target_keys in LEGACY_KEY_MIGRATIONS.items():
         if legacy_key not in session_state:
@@ -145,7 +144,7 @@ def migrate_legacy_widget_keys(session_state: MutableMapping[str, Any]) -> None:
             session_state.setdefault(target_key, session_state[legacy_key])
 
 
-def apply_mode_switch_reset(session_state: MutableMapping[str, Any]) -> bool:
+def apply_mode_switch_reset(session_state: SessionStateLike) -> bool:
     """Clear mode-specific live state when the user switches between Normal and Statistics."""
     current_mode = str(session_state.get("app_mode", NORMAL_MODE))
     previous_mode = str(session_state.get("_last_app_mode", current_mode))
@@ -154,7 +153,7 @@ def apply_mode_switch_reset(session_state: MutableMapping[str, Any]) -> bool:
 
     if previous_mode in {NORMAL_MODE, STATISTICS_MODE}:
         clear_mode_state(session_state, previous_mode)
-    for transient_key in [key for key in list(session_state.keys()) if key.startswith("_export_cache_")]:
+    for transient_key in [key for key in list(session_state.keys()) if str(key).startswith("_export_cache_")]:
         session_state.pop(transient_key, None)
     session_state.pop("_prefs", None)
     hydrate_mode_preferences(session_state, current_mode)
@@ -162,7 +161,7 @@ def apply_mode_switch_reset(session_state: MutableMapping[str, Any]) -> bool:
     return True
 
 
-def reset_corrupted_settings_state(session_state: MutableMapping[str, Any], sample_dataframe: pd.DataFrame) -> None:
+def reset_corrupted_settings_state(session_state: SessionStateLike, sample_dataframe: pd.DataFrame) -> None:
     """Expose a user-facing hard reset for persisted settings and runtime state."""
     reset_corrupted_settings(session_state, sample_dataframe)
 

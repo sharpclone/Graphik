@@ -1,4 +1,4 @@
-"""Unit tests for core physics calculations."""
+"""Unit tests for core plotting calculations."""
 
 from __future__ import annotations
 
@@ -6,8 +6,6 @@ import numpy as np
 
 from src.calculations import (
     centroid_error_lines,
-    compute_sigma_y_from_t,
-    compute_y_from_t,
     endpoint_extreme_error_lines,
     exponential_regression,
     free_intercept_error_lines,
@@ -16,19 +14,6 @@ from src.calculations import (
     logarithmic_transform_with_uncertainty,
     protocol_endpoint_error_lines,
 )
-
-
-def test_compute_y_from_t_squared() -> None:
-    t = np.array([1.0, 2.0, 3.5])
-    expected = np.array([1.0, 4.0, 12.25])
-    np.testing.assert_allclose(compute_y_from_t(t), expected)
-
-
-def test_compute_sigma_y_from_t_propagation() -> None:
-    t = np.array([1.0, 2.0, 3.0])
-    sigma_t = np.array([0.1, 0.05, 0.2])
-    expected = np.array([0.2, 0.2, 1.2])
-    np.testing.assert_allclose(compute_sigma_y_from_t(t, sigma_t), expected)
 
 
 def test_linear_regression_perfect_line() -> None:

@@ -11,6 +11,7 @@ import plotly.graph_objects as go
 from .calculations import ErrorLineResult, LinearFitResult
 from .export_utils import PlotTextBlockLayout
 from .statistics import DistributionStats
+from .ux_models import PlotInfoBoxStatus
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,7 @@ class NormalModeConfig:
     fit_model: str
     show_fit_line: bool
     show_error_lines: bool
+    extrapolate_lines: bool
     error_line_mode: str
     fit_label: str
     fit_color: str
@@ -133,6 +135,7 @@ class PlotContract:
     plot_info_box: PlotInfoBoxConfig
     annotation_font_size: int
     build_export_base_figure: Callable[..., go.Figure]
+    plot_info_status: PlotInfoBoxStatus | None = None
 
 
 @dataclass(frozen=True)
@@ -149,9 +152,9 @@ class NormalAnalysisResult:
     error_line_error: str | None
     error_line_method: str
     fit_triangle_slope: float | None
+    plot_contract: PlotContract
     error_triangle_slopes: dict[str, float] = field(default_factory=dict)
     final_slope: str | None = None
-    plot_contract: PlotContract | None = None
     messages: tuple[tuple[str, str], ...] = field(default_factory=tuple)
 
 

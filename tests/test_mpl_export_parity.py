@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from matplotlib.backends.backend_agg import FigureCanvasAgg
-import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import pytest
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 
 from src.errors import ExportValidationError
 from src.export_utils import scale_figure_for_export
@@ -16,7 +15,7 @@ def _assert_text_and_legend_inside_canvas(mpl_figure, ax) -> None:
     canvas = FigureCanvasAgg(mpl_figure)
     canvas.draw()
     renderer = canvas.get_renderer()
-    artists = [ax.xaxis.label, ax.yaxis.label, ax.title, *ax.get_xticklabels(), *ax.get_yticklabels()]
+    artists = [ax.xaxis.label, ax.yaxis.label, ax.title, *ax.get_xticklabels(), *ax.get_yticklabels(), *ax.texts]
     legend = ax.get_legend()
     if legend is not None:
         artists.append(legend)
@@ -30,6 +29,23 @@ def _assert_text_and_legend_inside_canvas(mpl_figure, ax) -> None:
         assert bbox.x1 <= 1.005
         assert bbox.y0 >= -0.005
         assert bbox.y1 <= 1.005
+
+
+def _assert_legend_texts_do_not_overlap(mpl_figure, ax) -> None:
+    canvas = FigureCanvasAgg(mpl_figure)
+    canvas.draw()
+    renderer = canvas.get_renderer()
+    legend = ax.get_legend()
+    assert legend is not None
+    text_boxes = []
+    for text in legend.get_texts():
+        bbox = text.get_window_extent(renderer=renderer).transformed(mpl_figure.transFigure.inverted())
+        text_boxes.append(bbox)
+    for idx, first in enumerate(text_boxes):
+        for second in text_boxes[idx + 1 :]:
+            x_overlap = min(first.x1, second.x1) - max(first.x0, second.x0)
+            y_overlap = min(first.y1, second.y1) - max(first.y0, second.y0)
+            assert not (x_overlap > 0.002 and y_overlap > 0.002)
 
 
 def _normal_preview(log_y: bool = False) -> go.Figure:
@@ -99,6 +115,30 @@ def test_horizontal_legend_is_present_and_inside_canvas() -> None:
     _assert_text_and_legend_inside_canvas(mpl_figure, ax)
 
 
+def test_horizontal_legend_wraps_long_labels_without_overlap() -> None:
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=[1, 2, 3], y=[1, 3, 2], mode="markers", name="Messwerte"))
+    fig.add_trace(go.Scatter(x=[1, 2, 3], y=[1, 2, 3], mode="lines", name="Ausgleichsgerade (a=0.006939)"))
+    fig.add_trace(go.Scatter(x=[1, 2, 3], y=[1, 1.8, 2.8], mode="lines", name="Fehlergerade mit kleinster Steigung (a=0.006964)"))
+    fig.add_trace(go.Scatter(x=[1, 2, 3], y=[1.2, 2.2, 3.1], mode="lines", name="Fehlergerade mit groesster Steigung (a=0.007202)"))
+    fig.update_layout(
+        width=1400,
+        height=900,
+        xaxis_title="x",
+        yaxis_title="y",
+        legend={"orientation": "h", "x": 0.0, "y": 1.02, "xanchor": "left", "yanchor": "bottom"},
+    )
+
+    mpl_figure, ax, summary = render_plotly_figure_to_matplotlib(fig, width=1400, height=900, base_dpi=200)
+
+    assert summary.legend_present is True
+    legend = ax.get_legend()
+    assert legend is not None
+    assert getattr(legend, "_ncols", 1) <= 2
+    _assert_text_and_legend_inside_canvas(mpl_figure, ax)
+    _assert_legend_texts_do_not_overlap(mpl_figure, ax)
+
+
 @pytest.mark.parametrize("fmt,signature", [("svg", b"<?xml"), ("pdf", b"%PDF")])
 def test_semilog_grid_and_ticks_are_coherent_in_vector_exports(fmt: str, signature: bytes) -> None:
     fig = _normal_preview(log_y=True)
@@ -135,3 +175,22 @@ def test_unsupported_export_feature_fails_with_clear_message() -> None:
 
     with pytest.raises(ExportValidationError, match="Unsupported feature in export backend"):
         figure_to_image_bytes(fig, "png", width=800, height=500, scale=1.0, base_dpi=200)
+
+
+def test_preview_export_parity_keeps_annotations_inside_canvas() -> None:
+    fig = _normal_preview(log_y=False)
+    fig.add_annotation(
+        x=0.98,
+        y=0.96,
+        xref="paper",
+        yref="paper",
+        text="export box",
+        showarrow=False,
+        xanchor="right",
+        yanchor="top",
+        bgcolor="rgba(255,255,255,0.9)",
+    )
+
+    mpl_figure, ax, _summary = render_plotly_figure_to_matplotlib(fig, width=1000, height=640, base_dpi=200)
+
+    _assert_text_and_legend_inside_canvas(mpl_figure, ax)

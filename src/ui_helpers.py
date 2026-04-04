@@ -1,4 +1,4 @@
-"""Small UI-facing helpers for labels and displayed equations."""
+﻿"""Small UI-facing helpers for labels and displayed equations."""
 
 from __future__ import annotations
 
@@ -9,99 +9,121 @@ import numpy as np
 from .config import DEFAULT_X_LABEL, DEFAULT_Y_LABEL
 from .i18n import translate
 
-
 _TEX_UNICODE_MAP = {
-    r"\Delta": "Δ",
-    r"\delta": "δ",
-    r"\sigma": "σ",
-    r"\Sigma": "Σ",
-    r"\mu": "μ",
-    r"\lambda": "λ",
-    r"\Lambda": "Λ",
-    r"\pi": "π",
-    r"\Pi": "Π",
-    r"\phi": "φ",
-    r"\Phi": "Φ",
-    r"\omega": "ω",
-    r"\Omega": "Ω",
-    r"\alpha": "α",
-    r"\beta": "β",
-    r"\gamma": "γ",
-    r"\tau": "τ",
-    r"\theta": "θ",
-    r"\rho": "ρ",
-    r"\pm": "±",
-    r"\cdot": "·",
-    r"\times": "×",
+    r"\Delta": "\u0394",
+    r"\delta": "\u03b4",
+    r"\sigma": "\u03c3",
+    r"\Sigma": "\u03a3",
+    r"\mu": "\u03bc",
+    r"\lambda": "\u03bb",
+    r"\Lambda": "\u039b",
+    r"\pi": "\u03c0",
+    r"\Pi": "\u03a0",
+    r"\phi": "\u03c6",
+    r"\Phi": "\u03a6",
+    r"\omega": "\u03c9",
+    r"\Omega": "\u03a9",
+    r"\alpha": "\u03b1",
+    r"\beta": "\u03b2",
+    r"\gamma": "\u03b3",
+    r"\tau": "\u03c4",
+    r"\theta": "\u03b8",
+    r"\rho": "\u03c1",
+    r"\pm": "\u00b1",
+    r"\cdot": "\u00b7",
+    r"\times": "\u00d7",
+}
+
+_UNICODE_SYMBOL_MAP = {
+    "\u0394": "\u0394",
+    "\u03b4": "\u03b4",
+    "\u03c3": "\u03c3",
+    "\u03a3": "\u03a3",
+    "\u03bc": "\u03bc",
+    "\u03bb": "\u03bb",
+    "\u039b": "\u039b",
+    "\u03c0": "\u03c0",
+    "\u03a0": "\u03a0",
+    "\u03c6": "\u03c6",
+    "\u03a6": "\u03a6",
+    "\u03c9": "\u03c9",
+    "\u03a9": "\u03a9",
+    "\u03b1": "\u03b1",
+    "\u03b2": "\u03b2",
+    "\u03b3": "\u03b3",
+    "\u03c4": "\u03c4",
+    "\u03b8": "\u03b8",
+    "\u03c1": "\u03c1",
+    "\u00b1": "\u00b1",
+    "\u00b7": "\u00b7",
+    "\u00d7": "\u00d7",
 }
 
 _SUPERSCRIPT_CHARS = {
-    "⁰": "0",
-    "¹": "1",
-    "²": "2",
-    "³": "3",
-    "⁴": "4",
-    "⁵": "5",
-    "⁶": "6",
-    "⁷": "7",
-    "⁸": "8",
-    "⁹": "9",
-    "⁺": "+",
-    "⁻": "-",
-    "⁼": "=",
-    "⁽": "(",
-    "⁾": ")",
-    "ⁱ": "i",
-    "ⁿ": "n",
+    "\u2070": "0",
+    "\u00b9": "1",
+    "\u00b2": "2",
+    "\u00b3": "3",
+    "\u2074": "4",
+    "\u2075": "5",
+    "\u2076": "6",
+    "\u2077": "7",
+    "\u2078": "8",
+    "\u2079": "9",
+    "\u207a": "+",
+    "\u207b": "-",
+    "\u207c": "=",
+    "\u207d": "(",
+    "\u207e": ")",
+    "\u2071": "i",
+    "\u207f": "n",
 }
 
 _SUBSCRIPT_CHARS = {
-    "₀": "0",
-    "₁": "1",
-    "₂": "2",
-    "₃": "3",
-    "₄": "4",
-    "₅": "5",
-    "₆": "6",
-    "₇": "7",
-    "₈": "8",
-    "₉": "9",
-    "₊": "+",
-    "₋": "-",
-    "₌": "=",
-    "₍": "(",
-    "₎": ")",
-    "ₐ": "a",
-    "ₑ": "e",
-    "ₕ": "h",
-    "ᵢ": "i",
-    "ⱼ": "j",
-    "ₖ": "k",
-    "ₗ": "l",
-    "ₘ": "m",
-    "ₙ": "n",
-    "ₒ": "o",
-    "ₚ": "p",
-    "ᵣ": "r",
-    "ₛ": "s",
-    "ₜ": "t",
-    "ᵤ": "u",
-    "ᵥ": "v",
-    "ₓ": "x",
+    "\u2080": "0",
+    "\u2081": "1",
+    "\u2082": "2",
+    "\u2083": "3",
+    "\u2084": "4",
+    "\u2085": "5",
+    "\u2086": "6",
+    "\u2087": "7",
+    "\u2088": "8",
+    "\u2089": "9",
+    "\u208a": "+",
+    "\u208b": "-",
+    "\u208c": "=",
+    "\u208d": "(",
+    "\u208e": ")",
+    "\u2090": "a",
+    "\u2091": "e",
+    "\u2095": "h",
+    "\u1d62": "i",
+    "\u2c7c": "j",
+    "\u2096": "k",
+    "\u2097": "l",
+    "\u2098": "m",
+    "\u2099": "n",
+    "\u2092": "o",
+    "\u209a": "p",
+    "\u1d63": "r",
+    "\u209b": "s",
+    "\u209c": "t",
+    "\u1d64": "u",
+    "\u1d65": "v",
+    "\u2093": "x",
 }
 
-_SUPERSCRIPT_PATTERN = re.compile(
-    "(" + "|".join(re.escape(char) for char in _SUPERSCRIPT_CHARS) + ")+"
+_SUPERSCRIPT_PATTERN = re.compile("(" + "|".join(re.escape(char) for char in _SUPERSCRIPT_CHARS) + ")+")
+_SUBSCRIPT_PATTERN = re.compile("(" + "|".join(re.escape(char) for char in _SUBSCRIPT_CHARS) + ")+")
+_MATH_TRIGGER_PATTERN = re.compile(
+    r"(\\[A-Za-z]+|[_^]|[\u0394\u03b4\u03c3\u03a3\u03bc\u03bb\u039b\u03c0\u03a0\u03c6\u03a6\u03c9\u03a9\u03b1\u03b2\u03b3\u03c4\u03b8\u03c1\u00b1\u00b7\u00d7]|[\u2070\u00b9\u00b2\u00b3\u2074\u2075\u2076\u2077\u2078\u2079\u207a\u207b\u207c\u207d\u207e\u2080\u2081\u2082\u2083\u2084\u2085\u2086\u2087\u2088\u2089\u208a\u208b\u208c\u208d\u208e\u2090\u2091\u2095\u1d62\u2c7c\u2096\u2097\u2098\u2099\u2092\u209a\u1d63\u209b\u209c\u1d64\u1d65\u2093])"
 )
-_SUBSCRIPT_PATTERN = re.compile(
-    "(" + "|".join(re.escape(char) for char in _SUBSCRIPT_CHARS) + ")+"
-)
-_MATH_TRIGGER_PATTERN = re.compile(r"(\\[A-Za-z]+|[_^]|[ΔδσΣμλΛπΠφΦωΩαβγτθρ±·×]|[⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎ₐₑₕᵢⱼₖₗₘₙₒₚᵣₛₜᵤᵥₓ])")
 
 
-def safe_default_index(options: list[str], preferred: str, fallback: int = 0) -> int:
+def safe_default_index(options: list[str], preferred: str | None, fallback: int = 0) -> int:
     """Return preferred option index if present, otherwise fallback."""
-    if preferred in options:
+    if preferred and preferred in options:
         return options.index(preferred)
     return fallback
 
@@ -109,8 +131,16 @@ def safe_default_index(options: list[str], preferred: str, fallback: int = 0) ->
 def _replace_tex_macros(text: str) -> str:
     """Replace common TeX macros with readable Unicode symbols."""
     out = str(text)
-    for macro, unicode_char in _TEX_UNICODE_MAP.items():
-        out = out.replace(macro, unicode_char)
+    for macro, symbol in _TEX_UNICODE_MAP.items():
+        out = out.replace(macro, symbol)
+    return out
+
+
+def _replace_unicode_math_symbols(text: str) -> str:
+    """Normalize direct Unicode math symbols while keeping them as symbols."""
+    out = str(text)
+    for unicode_char, symbol in _UNICODE_SYMBOL_MAP.items():
+        out = out.replace(unicode_char, symbol)
     return out
 
 
@@ -136,14 +166,17 @@ def _convert_scripts_to_html(text: str) -> str:
         previous = out
         out = re.sub(r"\^\{([^{}]+)\}", r"<sup>\1</sup>", out)
         out = re.sub(r"_\{([^{}]+)\}", r"<sub>\1</sub>", out)
-        out = re.sub(r"\^([A-Za-z0-9+\-().]+)", r"<sup>\1</sup>", out)
+        out = re.sub(r"\^([A-Za-z0-9+\-.]+)", r"<sup>\1</sup>", out)
         out = re.sub(r"_([A-Za-z0-9+\-.]+)", r"<sub>\1</sub>", out)
     return out
 
 
 def prettify_plot_text(text: str) -> str:
-    """Convert TeX-like math notation to web-friendly Unicode/HTML."""
-    out = _replace_tex_macros(_replace_unicode_scripts(str(text).strip()))
+    """Convert TeX-like math notation to Plotly-friendly Unicode and HTML."""
+    out = str(text).strip()
+    out = _replace_unicode_scripts(out)
+    out = _replace_tex_macros(out)
+    out = _replace_unicode_math_symbols(out)
     out = _convert_scripts_to_html(out)
     out = out.replace("{", "").replace("}", "")
     return out
@@ -165,14 +198,13 @@ def squared_label_from_column(column_name: str) -> str:
     """Build readable squared label from a source column header."""
     label = str(column_name).strip()
     if not label:
-        return "T²"
+        return "T\u00b2"
     match = re.match(r"^(.*?)\s*\[(.*?)\]\s*$", label)
     if match:
-        quantity = match.group(1).strip()
+        quantity = match.group(1).strip() or "T"
         unit = match.group(2).strip()
-        quantity = quantity if quantity else "T"
-        return f"({quantity})² [{unit}²]"
-    return f"({label})²"
+        return f"({quantity})\u00b2 [{unit}\u00b2]"
+    return f"({label})\u00b2"
 
 
 def auto_axis_labels(
@@ -205,9 +237,7 @@ def auto_line_labels(error_method: str, lang: str = "de") -> tuple[str, str, str
 def format_linear_equation(label: str, slope: float, intercept: float, decimals: int = 5) -> str:
     """Format y = a*x + b equation text."""
     sign = "+" if intercept >= 0 else "-"
-    return (
-        f"{label}: y = {slope:.{int(decimals)}g}·x {sign} {abs(intercept):.{int(decimals)}g}"
-    )
+    return f"{label}: y = {slope:.{int(decimals)}g}\u00b7x {sign} {abs(intercept):.{int(decimals)}g}"
 
 
 def format_exponential_equation(
@@ -218,9 +248,7 @@ def format_exponential_equation(
 ) -> str:
     """Format y = k*exp(a*x) equation text from log-space line params."""
     prefactor = float(np.exp(intercept_log))
-    return (
-        f"{label}: y = {prefactor:.{int(decimals)}g}·e^({slope_log:.{int(decimals)}g}·x)"
-    )
+    return f"{label}: y = {prefactor:.{int(decimals)}g}\u00b7e^({slope_log:.{int(decimals)}g}\u00b7x)"
 
 
 def fit_line_help_text(fit_model: str, lang: str = "de") -> str:
@@ -251,7 +279,7 @@ def _clean_label_for_symbol(label: str) -> str:
     if text.startswith("$") and text.endswith("$") and len(text) >= 2:
         text = text[1:-1].strip()
     text = re.sub(r"\[.*?\]", "", text).strip()
-    text = text.rstrip(",:;")
+    text = text.rstrip(',:;')
     if text.startswith("(") and text.endswith(")") and len(text) > 2:
         text = text[1:-1].strip()
     return text
@@ -261,8 +289,8 @@ def auto_delta_symbol_from_label(label: str, fallback_axis: str) -> str:
     """Return auto-detected delta symbol from label, with axis fallback."""
     cleaned = _clean_label_for_symbol(label)
     if cleaned:
-        return f"Δ{cleaned}"
-    return f"Δ{fallback_axis.upper()}"
+        return f"\u0394{cleaned}"
+    return f"\u0394{fallback_axis.upper()}"
 
 
 def auto_triangle_delta_symbols(x_label: str, y_label: str) -> tuple[str, str]:

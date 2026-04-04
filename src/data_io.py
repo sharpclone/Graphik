@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import csv
+import re
 from dataclasses import dataclass
 from io import BytesIO, StringIO
-import re
-from typing import BinaryIO
+from typing import BinaryIO, cast
 
 import numpy as np
 import pandas as pd
-
 
 
 @dataclass(frozen=True)
@@ -86,7 +85,7 @@ def _detect_delimiter(text: str) -> str:
         return str(csv.Sniffer().sniff(sample, delimiters=delimiters).delimiter)
     except csv.Error:
         counts = {delimiter: sample.count(delimiter) for delimiter in delimiters}
-        detected = max(counts, key=counts.get)
+        detected = max(counts, key=lambda delimiter_name: counts[delimiter_name])
         return detected if counts[detected] > 0 else ","
 
 
@@ -116,36 +115,49 @@ def load_csv_file(file_obj: BinaryIO) -> pd.DataFrame:
     return _read_delimited_text(text)
 
 
-def load_table_file(file_obj: BinaryIO, filename: str) -> pd.DataFrame:
-    """Load CSV, Excel, or OpenDocument table file-like object into dataframe."""
+def _read_table_bytes(content: bytes | str, filename: str) -> pd.DataFrame:
+    """Read uploaded table bytes without applying Graphik-specific sanitization."""
     suffix = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
-    content = file_obj.read()
 
     if suffix == "csv":
         text = _decode_text_content(content)
-        return sanitize_dataframe(_read_delimited_text(text))
+        return _read_delimited_text(text)
 
     if suffix in {"xlsx", "xls"}:
         if not isinstance(content, bytes):
             content = str(content).encode("utf-8")
-        return sanitize_dataframe(pd.read_excel(BytesIO(content)))
+        return pd.read_excel(BytesIO(content))
 
     if suffix == "ods":
         if not isinstance(content, bytes):
             content = str(content).encode("utf-8")
-        return sanitize_dataframe(pd.read_excel(BytesIO(content), engine="odf"))
+        return pd.read_excel(BytesIO(content), engine="odf")
 
     raise ValueError("Unsupported file format. Use .csv, .xlsx, .xls, or .ods.")
 
 
-def sanitize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    """Normalize dataframe columns and drop fully empty rows."""
+def load_table_file_raw(file_obj: BinaryIO, filename: str) -> pd.DataFrame:
+    """Load a raw CSV/Excel/OpenDocument table without auto header promotion."""
+    content = file_obj.read()
+    return _read_table_bytes(content, filename)
+
+
+def load_table_file(file_obj: BinaryIO, filename: str) -> pd.DataFrame:
+    """Load CSV, Excel, or OpenDocument table file-like object into dataframe."""
+    return sanitize_dataframe(load_table_file_raw(file_obj, filename))
+
+
+def _normalize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize column text and drop fully empty rows before header handling."""
     cleaned = df.copy()
     cleaned.columns = [str(col).strip() for col in cleaned.columns]
     cleaned = cleaned.dropna(axis=0, how="all")
-    cleaned = _promote_first_row_as_header_if_likely(cleaned)
-    cleaned = _rename_all_unnamed_columns(cleaned)
     return cleaned.reset_index(drop=True)
+
+
+def sanitize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize dataframe columns and drop fully empty rows."""
+    return apply_header_strategy(df, header_mode="auto")
 
 
 def _as_numeric_or_nan(value: object) -> float:
@@ -161,7 +173,7 @@ def _is_text_label(value: object) -> bool:
     text = str(value).strip()
     if not text:
         return False
-    return np.isnan(_as_numeric_or_nan(text))
+    return bool(np.isnan(_as_numeric_or_nan(text)))
 
 
 def _unique_headers(values: list[str], fallback: list[str]) -> list[str]:
@@ -176,6 +188,24 @@ def _unique_headers(values: list[str], fallback: list[str]) -> list[str]:
             suffix += 1
         out.append(candidate)
     return out
+
+
+def _promote_specific_row_as_header(df: pd.DataFrame, row_index: int) -> pd.DataFrame:
+    """Promote a specific zero-based row to headers."""
+    if df.empty:
+        return df
+    if row_index < 0 or row_index >= len(df):
+        raise ValueError("Header row index is out of range.")
+
+    header_values = [
+        str(v).strip() if v is not None and not pd.isna(v) else ""
+        for v in df.iloc[row_index].tolist()
+    ]
+    fallback_headers = [str(c).strip() for c in df.columns]
+    new_headers = _unique_headers(header_values, fallback_headers)
+    promoted = df.iloc[row_index + 1 :].reset_index(drop=True).copy()
+    promoted.columns = new_headers
+    return promoted
 
 
 def _promote_first_row_as_header_if_likely(df: pd.DataFrame) -> pd.DataFrame:
@@ -208,16 +238,7 @@ def _promote_first_row_as_header_if_likely(df: pd.DataFrame) -> pd.DataFrame:
     if header_row_index is None:
         return df
 
-    header_values = [
-        str(v).strip() if v is not None and not pd.isna(v) else ""
-        for v in df.iloc[header_row_index].tolist()
-    ]
-    fallback_headers = [str(c).strip() for c in df.columns]
-    new_headers = _unique_headers(header_values, fallback_headers)
-
-    promoted = df.iloc[header_row_index + 1 :].reset_index(drop=True).copy()
-    promoted.columns = new_headers
-    return promoted
+    return _promote_specific_row_as_header(df, header_row_index)
 
 
 def _rename_all_unnamed_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -232,7 +253,7 @@ def _rename_all_unnamed_columns(df: pd.DataFrame) -> pd.DataFrame:
         return df
 
     if all(col.lower().startswith("unnamed") for col in cols):
-        defaults = ["m", "T_mean", "sigma_T", "y", "sigma_y"]
+        defaults = ["x", "y", "sigma_y", "col_4", "col_5"]
         renamed: list[str] = []
         for idx, _ in enumerate(cols):
             if idx < len(defaults):
@@ -251,6 +272,30 @@ def _rename_all_unnamed_columns(df: pd.DataFrame) -> pd.DataFrame:
         return copy_df
 
     return df
+
+
+def apply_header_strategy(
+    df: pd.DataFrame,
+    *,
+    header_mode: str = "auto",
+    header_row_index: int | None = None,
+) -> pd.DataFrame:
+    """Apply one explicit header-detection strategy to an imported table."""
+    cleaned = _normalize_dataframe(df)
+
+    if header_mode == "auto":
+        cleaned = _promote_first_row_as_header_if_likely(cleaned)
+    elif header_mode in {"current", "none"}:
+        pass
+    elif header_mode == "row":
+        if header_row_index is None:
+            raise ValueError("Header row index is required for manual header detection.")
+        cleaned = _promote_specific_row_as_header(cleaned, int(header_row_index))
+    else:
+        raise ValueError(f"Unsupported header mode '{header_mode}'.")
+
+    cleaned = _rename_all_unnamed_columns(cleaned)
+    return cleaned.reset_index(drop=True)
 
 
 def _trim_leading_non_data_rows(df: pd.DataFrame, required_columns: list[str]) -> pd.DataFrame:
@@ -328,4 +373,6 @@ def prepare_measurement_data(
 
 def dataframe_to_csv_bytes(df: pd.DataFrame) -> bytes:
     """Export dataframe as UTF-8 CSV bytes."""
-    return df.to_csv(index=False).encode("utf-8")
+    csv_text = cast(str, df.to_csv(index=False))
+    return csv_text.encode("utf-8")
+

@@ -8,10 +8,14 @@ import plotly.graph_objects as go
 import pytest
 
 from src.errors import ExportValidationError
-from src.export_pipeline import EXPORT_DEBUG_DIR, ExportConfig, ExportRequest, build_export_figure, prepare_export_bytes
-from src.export_utils import PLOT_INFO_ANNOTATION_NAME, PlotTextBlockLayout, autoscale_figure_to_data, place_plot_text_block
+from src.export_pipeline import ExportConfig, ExportRequest, build_export_figure, prepare_export_bytes
+from src.export_utils import (
+    PLOT_INFO_ANNOTATION_NAME,
+    PlotTextBlockLayout,
+    autoscale_figure_to_data,
+    place_plot_text_block,
+)
 from src.plotting import PlotStyle, create_base_figure
-
 
 _EXPORT_SIGNATURES = {
     "png": bytes([137]) + b"PNG",
@@ -169,6 +173,49 @@ def test_place_plot_text_block_is_idempotent() -> None:
     assert len(info_annotations) == 1
 
 
+def test_statistics_build_export_figure_applies_autoscale_when_enabled() -> None:
+    preview_figure = _statistics_preview("linear")
+
+    def _build_base() -> go.Figure:
+        from src.export_utils import autoscale_figure_to_data
+
+        return autoscale_figure_to_data(
+            preview_figure,
+            np.array([], dtype=float),
+            np.array([], dtype=float),
+            np.array([], dtype=float),
+            "linear",
+        )
+
+    request = ExportRequest(
+        mode="statistics",
+        cache_prefix="statistics_autoscale",
+        preview_figure=preview_figure,
+        config=ExportConfig(
+            base_name="statistics_plot",
+            paper="A5",
+            orientation="landscape",
+            dpi=72,
+            raster_scale=1.0,
+            visual_scale=1.0,
+            target_text_pt=12.0,
+            autoscale_axes=True,
+        ),
+        plot_info_lines=("Normal distribution",),
+        plot_info_box_layout=PlotTextBlockLayout(),
+        plot_info_box_font_size=12,
+        annotation_font_size=12,
+        signature_payload={"stats_mode": True},
+    )
+
+    export_figure = build_export_figure(request, _build_base)
+    x_range = list(export_figure.layout.xaxis.range)
+    preview_x = np.asarray(preview_figure.data[0].x, dtype=float)
+
+    assert x_range[0] < float(np.min(preview_x))
+    assert x_range[1] > float(np.max(preview_x))
+
+
 def test_prepare_export_bytes_writes_debug_report_for_validation_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr("src.export_pipeline.EXPORT_DEBUG_DIR", tmp_path)
 
@@ -208,3 +255,45 @@ def test_prepare_export_bytes_writes_debug_report_for_validation_failure(monkeyp
     report_text = exc_info.value.report_path.read_text(encoding="utf-8")
     assert "invalid_log" in report_text
     assert "log-y export would place lower error bars at or below zero" in report_text
+
+
+def test_normal_build_export_figure_respects_custom_x_range_even_with_autoscale_enabled() -> None:
+    preview_figure, x_values, y_values, sigma_y_values = _normal_preview("linear")
+    preview_figure.update_xaxes(range=[80.0, 180.0])
+
+    def _build_base() -> go.Figure:
+        return autoscale_figure_to_data(
+            preview_figure,
+            x_values,
+            y_values,
+            sigma_y_values,
+            "linear",
+            preserve_x_range=True,
+            preserve_y_range=False,
+        )
+
+    request = ExportRequest(
+        mode="normal",
+        cache_prefix="normal_custom_range",
+        preview_figure=preview_figure,
+        config=ExportConfig(
+            base_name="normal_plot",
+            paper="A5",
+            orientation="landscape",
+            dpi=72,
+            raster_scale=1.0,
+            visual_scale=1.0,
+            target_text_pt=12.0,
+            autoscale_axes=True,
+        ),
+        plot_info_lines=("y = ax + b",),
+        plot_info_box_layout=PlotTextBlockLayout(),
+        plot_info_box_font_size=12,
+        annotation_font_size=12,
+        signature_payload={"fit_model": "linear"},
+    )
+
+    export_figure = build_export_figure(request, _build_base)
+    x_range = list(export_figure.layout.xaxis.range)
+
+    assert x_range == [80.0, 180.0]

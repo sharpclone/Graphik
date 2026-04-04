@@ -1,0 +1,5 @@
+﻿ruff>=0.11
+black>=24.10
+isort>=5.13
+mypy>=1.15
+pyright>=1.1

@@ -2,20 +2,22 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime
 import re
 import textwrap
+from dataclasses import asdict, dataclass
+from datetime import datetime
 
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
 import plotly.graph_objects as go
 
 from .config import SUMMARY_FLOAT_PRECISION
 from .i18n import translate
-
+from .ux_models import PlotInfoBoxStatus
 
 PLOT_INFO_ANNOTATION_NAME = "_plot_info_block"
+FloatArray = npt.NDArray[np.float64]
 
 
 @dataclass(frozen=True)
@@ -47,15 +49,15 @@ def add_plot_text_block(
     lines: list[str],
     font_size: int = 12,
     layout: PlotTextBlockLayout | None = None,
-) -> None:
+) -> PlotInfoBoxStatus | None:
     """Add equation block inside plot area, auto-placed in a low-overlap zone."""
     if not lines:
-        return
+        return None
 
     raw_lines = [str(line).strip() for line in lines if str(line).strip()]
     layout = layout or PlotTextBlockLayout()
     if not raw_lines:
-        return
+        return None
 
     def _wrap_lines(source_lines: list[str], width_chars: int) -> list[str]:
         wrapped_lines: list[str] = []
@@ -69,7 +71,7 @@ def add_plot_text_block(
             wrapped_lines.extend(wrapped if wrapped else [raw_line])
         return wrapped_lines
 
-    def _to_float_array(values: object) -> np.ndarray:
+    def _to_float_array(values: object) -> FloatArray:
         if values is None:
             return np.array([], dtype=float)
         try:
@@ -79,7 +81,7 @@ def add_plot_text_block(
             return arr.astype(float)
         except (TypeError, ValueError):
             try:
-                return pd.to_numeric(pd.Series(values), errors="coerce").to_numpy(dtype=float)
+                return np.asarray(pd.to_numeric(pd.Series(values), errors="coerce").to_numpy(dtype=float), dtype=np.float64)
             except Exception:
                 return np.array([], dtype=float)
 
@@ -208,7 +210,7 @@ def add_plot_text_block(
             valid = np.isfinite(x_norm) & np.isfinite(y_norm)
             xn_valid = x_norm[valid]
             yn_valid = y_norm[valid]
-            for xn, yn in zip(xn_valid, yn_valid):
+            for xn, yn in zip(xn_valid, yn_valid, strict=True):
                 if -0.05 <= xn <= 1.05 and -0.05 <= yn <= 1.05:
                     points.append((float(xn), float(yn)))
 
@@ -283,7 +285,7 @@ def add_plot_text_block(
                     x_n = (x_e - x_min) / x_span
                     y_n = (np.log10(y_e) - y_min_log) / y_span_log
                     valid_e = np.isfinite(x_n) & np.isfinite(y_n)
-                    for xn, yn in zip(x_n[valid_e], y_n[valid_e]):
+                    for xn, yn in zip(x_n[valid_e], y_n[valid_e], strict=True):
                         if -0.05 <= xn <= 1.05 and -0.05 <= yn <= 1.05:
                             points.append((float(xn), float(yn)))
             else:
@@ -291,7 +293,7 @@ def add_plot_text_block(
                     x_n = (x_vals[:n] - x_min) / x_span
                     y_n = (y_extra - y_min) / y_span
                     valid_e = np.isfinite(x_n) & np.isfinite(y_n)
-                    for xn, yn in zip(x_n[valid_e], y_n[valid_e]):
+                    for xn, yn in zip(x_n[valid_e], y_n[valid_e], strict=True):
                         if -0.05 <= xn <= 1.05 and -0.05 <= yn <= 1.05:
                             points.append((float(xn), float(yn)))
 
@@ -525,6 +527,25 @@ def add_plot_text_block(
         name=PLOT_INFO_ANNOTATION_NAME,
     )
 
+    status = PlotInfoBoxStatus(
+        manual=bool(layout.manual),
+        requested_font_size=int(font_size),
+        final_font_size=int(round(effective_font_size)),
+        wrapped=bool(display_lines != raw_lines),
+        downscaled=bool(int(round(effective_font_size)) < int(font_size)),
+        x=float(x_pos),
+        y=float(y_pos),
+        width=float(box_w),
+        height=float(box_h),
+        wrap_width=int(wrap_width),
+    )
+    meta = fig.layout.meta.to_plotly_json() if hasattr(fig.layout.meta, "to_plotly_json") else fig.layout.meta
+    if not isinstance(meta, dict):
+        meta = {}
+    meta["plot_info_status"] = asdict(status)
+    fig.update_layout(meta=meta)
+    return status
+
 
 def remove_plot_text_block(fig: go.Figure, lines: list[str]) -> None:
     """Remove previously inserted equation text block matching current content."""
@@ -553,10 +574,10 @@ def place_plot_text_block(
     lines: list[str],
     font_size: int,
     layout: PlotTextBlockLayout | None = None,
-) -> None:
+) -> PlotInfoBoxStatus | None:
     """Reposition equation block by removing old one and placing with current layout."""
     remove_plot_text_block(fig, lines)
-    add_plot_text_block(fig, lines, font_size=font_size, layout=layout)
+    return add_plot_text_block(fig, lines, font_size=font_size, layout=layout)
 
 
 def paper_size_mm(name: str) -> tuple[float, float]:
@@ -668,62 +689,232 @@ def scale_figure_for_export(
     return out
 
 
+def _snap_linear_range_to_major_ticks(start: float, end: float, axis: object) -> tuple[float, float]:
+    """Snap a linear axis range outward to the configured major tick grid when possible."""
+    try:
+        dtick = getattr(axis, "dtick", None)
+        tick0 = getattr(axis, "tick0", None)
+        if dtick is None:
+            return start, end
+        step = float(dtick)
+        if not np.isfinite(step) or step <= 0:
+            return start, end
+        origin = 0.0 if tick0 is None else float(tick0)
+        if not np.isfinite(origin):
+            origin = 0.0
+    except (TypeError, ValueError):
+        return start, end
+
+    tolerance = step * 1e-9
+    snapped_start = origin + np.floor(((start - origin) - tolerance) / step) * step
+    snapped_end = origin + np.ceil(((end - origin) + tolerance) / step) * step
+    return float(snapped_start), float(snapped_end)
+
+
 def autoscale_figure_to_data(
     fig: go.Figure,
     x_values: np.ndarray,
     y_values: np.ndarray,
     sigma_y_values: np.ndarray,
     y_axis_type: str,
+    *,
+    preserve_x_range: bool = False,
+    preserve_y_range: bool = False,
 ) -> go.Figure:
-    """Return figure copy with x/y ranges recalculated from data and y-errors."""
+    """Return figure copy with x/y ranges recalculated from the full visible plot content."""
     out = go.Figure(fig)
 
-    x_vals = np.asarray(x_values, dtype=float)
-    y_vals = np.asarray(y_values, dtype=float)
-    s_vals = np.asarray(sigma_y_values, dtype=float)
+    def _to_float_array(values: object) -> np.ndarray:
+        if values is None:
+            return np.array([], dtype=float)
+        try:
+            arr = np.asarray(values, dtype=float)
+        except (TypeError, ValueError):
+            try:
+                return pd.to_numeric(pd.Series(values), errors="coerce").to_numpy(dtype=float)
+            except Exception:
+                return np.array([], dtype=float)
+        if arr.ndim == 0:
+            return np.array([float(arr)], dtype=float)
+        return arr.astype(float)
 
-    x_vals = x_vals[np.isfinite(x_vals)]
-    y_vals = y_vals[np.isfinite(y_vals)]
-    s_vals = s_vals[np.isfinite(s_vals)]
-    if x_vals.size == 0 or y_vals.size == 0:
+    def _pad_length(values: object, length: int, fill_value: float = 0.0) -> np.ndarray:
+        if length <= 0:
+            return np.array([], dtype=float)
+        arr = _to_float_array(values)
+        if arr.size == 0:
+            return np.full(length, float(fill_value), dtype=float)
+        if arr.size == 1 and length > 1:
+            return np.full(length, float(arr[0]), dtype=float)
+        if arr.size < length:
+            out_arr = np.full(length, float(fill_value), dtype=float)
+            out_arr[: arr.size] = arr
+            return out_arr
+        return arr[:length]
+
+    x_candidates: list[float] = []
+    y_candidates: list[float] = []
+
+    x_vals = _to_float_array(x_values)
+    y_vals = _to_float_array(y_values)
+    s_vals = _to_float_array(sigma_y_values)
+    base_n = min(x_vals.size, y_vals.size)
+    if base_n:
+        x_base = x_vals[:base_n]
+        y_base = y_vals[:base_n]
+        finite = np.isfinite(x_base) & np.isfinite(y_base)
+        x_base = x_base[finite]
+        y_base = y_base[finite]
+        x_candidates.extend(x_base.tolist())
+        y_candidates.extend(y_base.tolist())
+        if s_vals.size != base_n:
+            s_vals = np.zeros(base_n, dtype=float)
+        s_base = s_vals[:base_n][finite]
+        if s_base.size:
+            y_candidates.extend((y_base + s_base).tolist())
+            y_candidates.extend((y_base - s_base).tolist())
+
+    for trace in out.data:
+        if getattr(trace, "visible", True) in (False, "legendonly"):
+            continue
+        trace_type = str(getattr(trace, "type", "scatter")).lower()
+        x_arr = _to_float_array(getattr(trace, "x", None))
+        y_arr = _to_float_array(getattr(trace, "y", None))
+        n = min(x_arr.size, y_arr.size)
+        if n <= 0:
+            continue
+        x_arr = x_arr[:n]
+        y_arr = y_arr[:n]
+        finite = np.isfinite(x_arr) & np.isfinite(y_arr)
+        x_arr = x_arr[finite]
+        y_arr = y_arr[finite]
+        if x_arr.size == 0 or y_arr.size == 0:
+            continue
+        x_candidates.extend(x_arr.tolist())
+        y_candidates.extend(y_arr.tolist())
+
+        if trace_type == "bar":
+            width_attr = getattr(trace, "width", None)
+            widths = _pad_length(width_attr, x_arr.size, fill_value=np.nan)
+            finite_widths = widths[np.isfinite(widths) & (widths > 0)]
+            if finite_widths.size == 0:
+                if x_arr.size >= 2:
+                    approx_width = float(np.min(np.diff(np.sort(x_arr)))) * 0.85
+                else:
+                    approx_width = 1.0
+                widths = np.full(x_arr.size, max(approx_width, 1e-12), dtype=float)
+            else:
+                widths = np.where(np.isfinite(widths) & (widths > 0), widths, float(np.median(finite_widths)))
+            x_candidates.extend((x_arr - (widths / 2.0)).tolist())
+            x_candidates.extend((x_arr + (widths / 2.0)).tolist())
+
+        err_y = getattr(trace, "error_y", None)
+        if err_y is not None and bool(getattr(err_y, "visible", False)):
+            plus = _pad_length(getattr(err_y, "array", None), x_arr.size, fill_value=0.0)
+            minus_raw = getattr(err_y, "arrayminus", None)
+            minus = _pad_length(minus_raw, x_arr.size, fill_value=np.nan)
+            if np.isnan(minus).all():
+                minus = plus.copy()
+            y_candidates.extend((y_arr + plus).tolist())
+            y_candidates.extend((y_arr - minus).tolist())
+
+        err_x = getattr(trace, "error_x", None)
+        if err_x is not None and bool(getattr(err_x, "visible", False)):
+            plus = _pad_length(getattr(err_x, "array", None), x_arr.size, fill_value=0.0)
+            minus_raw = getattr(err_x, "arrayminus", None)
+            minus = _pad_length(minus_raw, x_arr.size, fill_value=np.nan)
+            if np.isnan(minus).all():
+                minus = plus.copy()
+            x_candidates.extend((x_arr + plus).tolist())
+            x_candidates.extend((x_arr - minus).tolist())
+
+    for shape in out.layout.shapes or []:
+        xref = str(getattr(shape, "xref", "x") or "x").lower()
+        yref = str(getattr(shape, "yref", "y") or "y").lower()
+        if xref == "x":
+            for value in (getattr(shape, "x0", None), getattr(shape, "x1", None)):
+                if value is None:
+                    continue
+                try:
+                    x_value = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if np.isfinite(x_value):
+                    x_candidates.append(x_value)
+        if yref == "y":
+            for value in (getattr(shape, "y0", None), getattr(shape, "y1", None)):
+                if value is None:
+                    continue
+                try:
+                    y_value = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if np.isfinite(y_value):
+                    y_candidates.append(y_value)
+
+    for annotation in out.layout.annotations or []:
+        xref = str(getattr(annotation, "xref", "") or "").lower()
+        yref = str(getattr(annotation, "yref", "") or "").lower()
+        if xref == "x":
+            try:
+                x_value = float(getattr(annotation, "x", None))
+            except (TypeError, ValueError):
+                x_value = np.nan
+            if np.isfinite(x_value):
+                x_candidates.append(float(x_value))
+        if yref == "y":
+            try:
+                y_value = float(getattr(annotation, "y", None))
+            except (TypeError, ValueError):
+                y_value = np.nan
+            if np.isfinite(y_value):
+                y_candidates.append(float(y_value))
+
+    x_arr_all = np.asarray(x_candidates, dtype=float)
+    y_arr_all = np.asarray(y_candidates, dtype=float)
+    x_arr_all = x_arr_all[np.isfinite(x_arr_all)]
+    y_arr_all = y_arr_all[np.isfinite(y_arr_all)]
+    if x_arr_all.size == 0 or y_arr_all.size == 0:
         return out
 
-    x_min = float(np.min(x_vals))
-    x_max = float(np.max(x_vals))
-    x_span = x_max - x_min
-    x_pad = max(1e-12, x_span * 0.05)
-    if x_span <= 0:
-        x_pad = max(1.0, abs(x_min) * 0.05)
-    out.update_xaxes(autorange=False, range=[x_min - x_pad, x_max + x_pad])
+    if not preserve_x_range:
+        x_min = float(np.min(x_arr_all))
+        x_max = float(np.max(x_arr_all))
+        x_span = x_max - x_min
+        x_pad = max(1e-12, x_span * 0.05)
+        if x_span <= 0:
+            x_pad = max(1.0, abs(x_min) * 0.05)
+        x_start, x_end = _snap_linear_range_to_major_ticks(x_min - x_pad, x_max + x_pad, out.layout.xaxis)
+        out.update_xaxes(autorange=False, range=[x_start, x_end])
 
-    if s_vals.size != y_vals.size:
-        s_vals = np.zeros_like(y_vals)
-
-    if y_axis_type == "log":
-        y_low = y_vals - s_vals
-        y_high = y_vals + s_vals
-        positive_low = y_low[y_low > 0]
-        positive_y = y_vals[y_vals > 0]
-        if positive_low.size == 0:
+    if not preserve_y_range:
+        if y_axis_type == "log":
+            positive_y = y_arr_all[y_arr_all > 0]
             if positive_y.size == 0:
                 return out
             y_min = float(np.min(positive_y)) * 0.95
+            y_max = float(np.max(positive_y)) * 1.05
+            if y_max <= y_min:
+                y_max = y_min * 10.0
+            out.update_yaxes(autorange=False, range=[np.log10(y_min), np.log10(y_max)])
         else:
-            y_min = float(np.min(positive_low)) * 0.95
-        y_max = float(np.max(y_high)) * 1.05
-        if y_max <= y_min:
-            y_max = y_min * 10.0
-        out.update_yaxes(autorange=False, range=[np.log10(y_min), np.log10(y_max)])
-    else:
-        y_low = y_vals - s_vals
-        y_high = y_vals + s_vals
-        y_min = float(np.min(y_low))
-        y_max = float(np.max(y_high))
-        y_span = y_max - y_min
-        y_pad = max(1e-12, y_span * 0.06)
-        if y_span <= 0:
-            y_pad = max(1.0, abs(y_min) * 0.05)
-        out.update_yaxes(autorange=False, range=[y_min - y_pad, y_max + y_pad])
+            y_min = float(np.min(y_arr_all))
+            y_max = float(np.max(y_arr_all))
+            y_span = y_max - y_min
+            y_pad = max(1e-12, y_span * 0.06)
+            if y_span <= 0:
+                y_pad = max(1.0, abs(y_min) * 0.05)
+            y_start, y_end = _snap_linear_range_to_major_ticks(y_min - y_pad, y_max + y_pad, out.layout.yaxis)
+            has_visible_bars = any(
+                str(getattr(trace, "type", "scatter")).lower() == "bar"
+                and getattr(trace, "visible", True) not in (False, "legendonly")
+                for trace in out.data
+            )
+            if has_visible_bars:
+                y_start = min(0.0, y_start)
+                if y_start < 0.0:
+                    y_start = 0.0
+            out.update_yaxes(autorange=False, range=[y_start, y_end])
 
     return out
 

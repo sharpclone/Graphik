@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
 import pickle
+from pathlib import Path
 
 import pandas as pd
 
@@ -152,3 +152,49 @@ def test_reset_corrupted_settings_clears_live_and_persisted_state(tmp_path: Path
     assert session_state["_snapshot_restore_error"] == ""
     assert session_state["_snapshot_save_error"] == ""
     assert f"{MODE_PREFIXES[NORMAL_MODE]}show_grid" not in session_state
+
+
+def test_restore_session_snapshot_records_schema_mismatch_for_user_prefs(tmp_path: Path) -> None:
+    user_prefs_path = tmp_path / "user_prefs.json"
+    runtime_path = tmp_path / "runtime.pkl"
+    user_prefs_path.write_text('{"version": 999, "user_prefs": {"language": "en"}}', encoding="utf-8")
+    session_state: dict[str, object] = {}
+
+    restore_session_snapshot(session_state, user_prefs_path=user_prefs_path, runtime_path=runtime_path)
+
+    assert "schema mismatch" in str(session_state["_snapshot_restore_error"])
+
+
+def test_restore_session_snapshot_records_corrupt_runtime_pickle(tmp_path: Path) -> None:
+    user_prefs_path = tmp_path / "user_prefs.json"
+    runtime_path = tmp_path / "runtime.pkl"
+    runtime_path.write_bytes(b"not-a-pickle")
+    session_state: dict[str, object] = {}
+
+    restore_session_snapshot(session_state, user_prefs_path=user_prefs_path, runtime_path=runtime_path)
+
+    assert "Failed to restore runtime state" in str(session_state["_snapshot_restore_error"])
+
+
+def test_save_session_snapshot_does_not_persist_export_cache_or_live_prefs(tmp_path: Path) -> None:
+    user_prefs_path = tmp_path / "user_prefs.json"
+    runtime_path = tmp_path / "runtime.pkl"
+    session_state: dict[str, object] = {
+        "remember_settings": True,
+        "language": "en",
+        "app_mode": NORMAL_MODE,
+        "normal.show_grid": True,
+        "table_df": pd.DataFrame({"x": [1.0], "y": [2.0]}),
+        "uploaded_signature": "sig-1",
+        "_export_cache_normal_png": {"signature": "abc", "data": b"123"},
+        "_prefs": {"temporary": True},
+    }
+
+    save_session_snapshot(session_state, user_prefs_path=user_prefs_path, runtime_path=runtime_path, persist_dir=tmp_path)
+
+    user_payload = __import__("json").loads(user_prefs_path.read_text(encoding="utf-8"))
+    runtime_payload = pickle.loads(runtime_path.read_bytes())
+    assert "_export_cache_normal_png" not in user_payload["user_prefs"]
+    assert "_prefs" not in user_payload["user_prefs"]
+    assert "_export_cache_normal_png" not in runtime_payload["runtime_state"]
+    assert session_state["_prefs"] == {"temporary": True}

@@ -2,22 +2,24 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 import json
-from pathlib import Path
+import logging
 import pickle
-from typing import Any, MutableMapping
+from collections.abc import Iterable
+from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
 from .errors import StateRestoreError, StateSaveError
-
+from .logging_utils import log_event, runtime_mode
+from .session_types import SessionStateLike
 
 PERSIST_DIR = Path(".streamlit")
 USER_PREFS_PATH = PERSIST_DIR / "user_prefs.json"
 RUNTIME_STATE_PATH = PERSIST_DIR / "last_runtime_state.pkl"
 LEGACY_SESSION_STATE_PATH = PERSIST_DIR / "last_session_state.pkl"
-SESSION_SCHEMA_VERSION = 2
+SESSION_SCHEMA_VERSION = 3
 NON_ASSIGNABLE_WIDGET_KEYS = frozenset({"table_editor"})
 GLOBAL_USER_PREF_KEYS = frozenset({"language", "app_mode", "remember_settings"})
 GLOBAL_RUNTIME_STATE_KEYS = frozenset({"table_df", "uploaded_signature"})
@@ -27,6 +29,8 @@ MODE_PREFIXES = {
     NORMAL_MODE: "normal.",
     STATISTICS_MODE: "stats.",
 }
+
+LOGGER = logging.getLogger('graphik.state')
 
 
 NORMAL_USER_PREF_NAMES = frozenset(
@@ -77,6 +81,7 @@ NORMAL_USER_PREF_NAMES = frozenset(
         "fit_model",
         "show_fit_line",
         "show_error_lines",
+        "extrapolate_lines",
         "error_line_mode_widget",
         "auto_line_labels",
         "fit_label_input",
@@ -98,6 +103,8 @@ NORMAL_USER_PREF_NAMES = frozenset(
         "triangle_x_decimals",
         "triangle_y_decimals",
         "export_base",
+        "export_preset",
+        "show_clean_export_preview",
         "png_paper",
         "png_orientation",
         "png_dpi",
@@ -143,6 +150,8 @@ STATISTICS_USER_PREF_NAMES = frozenset(
         "mean_color",
         "std_color",
         "export_base",
+        "export_preset",
+        "show_clean_export_preview",
         "png_paper",
         "png_orientation",
         "png_dpi",
@@ -150,6 +159,7 @@ STATISTICS_USER_PREF_NAMES = frozenset(
         "png_word_like",
         "png_text_pt",
         "png_visual_scale",
+        "autoscale_export_axes",
     }
 )
 
@@ -180,7 +190,7 @@ TRANSIENT_STATE_KEYS = frozenset(
 )
 
 
-def _record_state_error(session_state: MutableMapping[str, Any], *, bucket: str, exc: StateRestoreError | StateSaveError) -> None:
+def _record_state_error(session_state: SessionStateLike, *, bucket: str, exc: StateRestoreError | StateSaveError) -> None:
     existing = str(session_state.get(bucket, "")).strip()
     message = str(exc)
     if existing:
@@ -194,6 +204,7 @@ def _load_runtime_payload(runtime_path: Path) -> dict[str, Any]:
         with runtime_path.open("rb") as handle:
             payload = pickle.load(handle)
     except (pickle.UnpicklingError, EOFError, OSError, AttributeError, ValueError, TypeError) as exc:
+        log_event(LOGGER, logging.ERROR, "state_restore_runtime_failed", path=runtime_path, error=str(exc), packaged=runtime_mode() == "packaged")
         raise StateRestoreError(f"Failed to restore runtime state from {runtime_path}: {exc}") from exc
     if not isinstance(payload, dict):
         raise StateRestoreError(f"Saved runtime state in {runtime_path} is not a valid payload dictionary.")
@@ -204,6 +215,7 @@ def _load_user_prefs_payload(user_prefs_path: Path) -> dict[str, Any]:
     try:
         payload = json.loads(user_prefs_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        log_event(LOGGER, logging.ERROR, "state_restore_user_prefs_failed", path=user_prefs_path, error=str(exc), packaged=runtime_mode() == "packaged")
         raise StateRestoreError(f"Failed to restore user preferences from {user_prefs_path}: {exc}") from exc
     if not isinstance(payload, dict):
         raise StateRestoreError(f"Saved user preferences in {user_prefs_path} are not a valid payload dictionary.")
@@ -235,7 +247,7 @@ def _normalize_json_value(value: Any) -> Any:
 
 
 def _restore_values(
-    session_state: MutableMapping[str, Any],
+    session_state: SessionStateLike,
     values: dict[str, Any],
     *,
     allowed_keys: frozenset[str],
@@ -254,6 +266,7 @@ def _write_runtime_snapshot(runtime_path: Path, payload: dict[str, Any], persist
         with runtime_path.open("wb") as handle:
             pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
     except (pickle.PickleError, OSError, AttributeError, TypeError, ValueError) as exc:
+        log_event(LOGGER, logging.ERROR, "state_save_runtime_failed", path=runtime_path, error=str(exc), packaged=runtime_mode() == "packaged")
         raise StateSaveError(f"Failed to save runtime state to {runtime_path}: {exc}") from exc
 
 
@@ -262,11 +275,12 @@ def _write_user_prefs_snapshot(user_prefs_path: Path, payload: dict[str, Any], p
         persist_dir.mkdir(parents=True, exist_ok=True)
         user_prefs_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     except (OSError, TypeError, ValueError) as exc:
+        log_event(LOGGER, logging.ERROR, "state_save_user_prefs_failed", path=user_prefs_path, error=str(exc), packaged=runtime_mode() == "packaged")
         raise StateSaveError(f"Failed to save user preferences to {user_prefs_path}: {exc}") from exc
 
 
 def restore_session_snapshot(
-    session_state: MutableMapping[str, Any],
+    session_state: SessionStateLike,
     *,
     user_prefs_path: Path = USER_PREFS_PATH,
     runtime_path: Path = RUNTIME_STATE_PATH,
@@ -311,6 +325,7 @@ def restore_session_snapshot(
         allowed_keys=ALL_USER_PREF_KEYS,
         non_assignable_widget_keys=non_assignable_widget_keys,
     )
+    log_event(LOGGER, logging.INFO, "state_restore_completed", user_pref_keys=len(restored_user_prefs), runtime_keys=len(restored_runtime_state), packaged=runtime_mode() == "packaged")
     _restore_values(
         session_state,
         restored_runtime_state,
@@ -322,7 +337,7 @@ def restore_session_snapshot(
     session_state["_snapshot_restored"] = True
 
 
-def _collect_user_prefs(session_state: MutableMapping[str, Any]) -> dict[str, Any]:
+def _collect_user_prefs(session_state: SessionStateLike) -> dict[str, Any]:
     persisted = session_state.get("_persisted_user_prefs", {})
     merged: dict[str, Any] = {
         key: _normalize_json_value(value)
@@ -337,7 +352,7 @@ def _collect_user_prefs(session_state: MutableMapping[str, Any]) -> dict[str, An
     return merged
 
 
-def _collect_runtime_state(session_state: MutableMapping[str, Any]) -> dict[str, Any]:
+def _collect_runtime_state(session_state: SessionStateLike) -> dict[str, Any]:
     runtime_state: dict[str, Any] = {}
     for key in GLOBAL_RUNTIME_STATE_KEYS:
         if key in session_state:
@@ -352,7 +367,7 @@ def _remove_persisted_files(*paths: Path) -> None:
 
 
 def save_session_snapshot(
-    session_state: MutableMapping[str, Any],
+    session_state: SessionStateLike,
     *,
     user_prefs_path: Path = USER_PREFS_PATH,
     runtime_path: Path = RUNTIME_STATE_PATH,
@@ -390,6 +405,7 @@ def save_session_snapshot(
             {"version": SESSION_SCHEMA_VERSION, "runtime_state": runtime_state},
             persist_dir,
         )
+        log_event(LOGGER, logging.INFO, "state_save_completed", user_pref_keys=len(user_prefs), runtime_keys=len(runtime_state), packaged=runtime_mode() == "packaged")
         session_state["_persisted_user_prefs"] = dict(user_prefs)
         session_state["_persisted_runtime_state"] = dict(runtime_state)
         if LEGACY_SESSION_STATE_PATH.exists():
@@ -409,7 +425,7 @@ def clear_session_snapshot(
 
 
 def init_session_state(
-    session_state: MutableMapping[str, Any],
+    session_state: SessionStateLike,
     sample_dataframe: pd.DataFrame,
 ) -> None:
     """Initialize required session-state keys once."""
@@ -431,22 +447,23 @@ def init_session_state(
         session_state["_last_app_mode"] = str(session_state.get("app_mode", NORMAL_MODE))
 
 
-def reset_view_state(session_state: MutableMapping[str, Any]) -> None:
+def reset_view_state(session_state: SessionStateLike) -> None:
     """Reset only the active plot-view toggles for the current mode."""
     active_mode = str(session_state.get("app_mode", NORMAL_MODE))
     if active_mode == NORMAL_MODE:
         session_state[f"{MODE_PREFIXES[NORMAL_MODE]}custom_x_range"] = False
         session_state[f"{MODE_PREFIXES[NORMAL_MODE]}custom_y_range"] = False
-        session_state[f"{MODE_PREFIXES[NORMAL_MODE]}show_error_triangles"] = True
+        session_state[f"{MODE_PREFIXES[NORMAL_MODE]}show_fit_triangle"] = False
+        session_state[f"{MODE_PREFIXES[NORMAL_MODE]}show_error_triangles"] = False
 
 
-def clear_mode_state(session_state: MutableMapping[str, Any], mode: str) -> None:
+def clear_mode_state(session_state: SessionStateLike, mode: str) -> None:
     """Clear live widget values belonging to one mode namespace."""
     for key in MODE_USER_PREF_KEYS.get(mode, frozenset()):
         session_state.pop(key, None)
 
 
-def hydrate_mode_preferences(session_state: MutableMapping[str, Any], mode: str) -> None:
+def hydrate_mode_preferences(session_state: SessionStateLike, mode: str) -> None:
     """Restore saved preferences for a mode into the live session if missing."""
     persisted = session_state.get("_persisted_user_prefs", {})
     if not isinstance(persisted, dict):
@@ -459,14 +476,14 @@ def hydrate_mode_preferences(session_state: MutableMapping[str, Any], mode: str)
     )
 
 
-def reset_corrupted_settings(session_state: MutableMapping[str, Any], sample_dataframe: pd.DataFrame) -> None:
+def reset_corrupted_settings(session_state: SessionStateLike, sample_dataframe: pd.DataFrame) -> None:
     """Clear persisted state and return the live session to a known-clean baseline."""
     clear_session_snapshot()
     for key in list(session_state.keys()):
         if key in ALL_USER_PREF_KEYS or key in GLOBAL_RUNTIME_STATE_KEYS or key in TRANSIENT_STATE_KEYS:
             session_state.pop(key, None)
             continue
-        if key.startswith(TRANSIENT_STATE_PREFIXES):
+        if str(key).startswith(TRANSIENT_STATE_PREFIXES):
             session_state.pop(key, None)
     init_session_state(session_state, sample_dataframe)
     session_state["table_df"] = sample_dataframe.copy()

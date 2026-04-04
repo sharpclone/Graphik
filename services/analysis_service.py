@@ -16,7 +16,7 @@ from src.calculations import (
     logarithmic_transform_with_uncertainty,
     protocol_endpoint_error_lines,
 )
-from src.data_io import dataframe_to_csv_bytes, prepare_measurement_data
+from src.data_io import prepare_measurement_data
 from src.export_utils import autoscale_figure_to_data, build_summary_text, place_plot_text_block
 from src.geometry import auto_triangle_points, custom_points_from_x
 from src.mode_models import (
@@ -35,7 +35,7 @@ from src.plotting import (
     create_base_figure,
     visible_x_range,
 )
-from src.statistics import describe_distribution, normal_curve_points
+from src.statistics import DistributionStats, describe_distribution, normal_curve_points
 from src.ui_helpers import (
     auto_triangle_delta_symbols,
     format_exponential_equation,
@@ -45,6 +45,18 @@ from src.ui_helpers import (
 
 TranslateFn = Callable[..., str]
 
+
+def _dataframe_to_markdown(df: pd.DataFrame) -> str:
+    """Render a dataframe as markdown without requiring the optional tabulate package."""
+    try:
+        return df.to_markdown(index=False)
+    except ImportError:
+        columns = [str(column) for column in df.columns]
+        rows = df.fillna("").astype(str).values.tolist()
+        header = "| " + " | ".join(columns) + " |"
+        separator = "| " + " | ".join(["---"] * len(columns)) + " |"
+        body = ["| " + " | ".join(str(cell) for cell in row) + " |" for row in rows]
+        return "\n".join([header, separator, *body])
 EXP_ERROR_MIN_COLOR = "#ff8c00"
 EXP_ERROR_MAX_COLOR = "#ffd700"
 EXP_ERROR_MEAN_COLOR = "#1f77b4"
@@ -58,7 +70,7 @@ def best_statistics_column(columns: list[str], dataframe: pd.DataFrame) -> str:
         col: int(pd.to_numeric(dataframe[col], errors="coerce").notna().sum())
         for col in columns
     }
-    return max(counts, key=counts.get)
+    return max(counts, key=lambda column: counts[column])
 
 
 def build_statistics_summary_text(
@@ -66,7 +78,7 @@ def build_statistics_summary_text(
     raw_df: pd.DataFrame,
     stats_column: str,
     numeric_values_df: pd.DataFrame,
-    stats_result: object,
+    stats_result: DistributionStats,
     bins: int,
     normalize_density: bool,
     include_normal_fit: bool,
@@ -80,7 +92,7 @@ def build_statistics_summary_text(
     lines.append(translate("statistics.summary_column", column=stats_column))
     lines.append("")
     lines.append(translate("statistics.summary_numeric_values"))
-    lines.append(numeric_values_df.to_markdown(index=False))
+    lines.append(_dataframe_to_markdown(numeric_values_df))
     lines.append("")
     lines.append(translate("statistics.summary_metrics"))
     lines.append(translate("statistics.sample_size", value=str(int(stats_result.count))))
@@ -105,7 +117,7 @@ def build_statistics_summary_text(
         lines.append(translate("statistics.summary_fit_unavailable"))
     lines.append("")
     lines.append(translate("summary.raw_data"))
-    lines.append(raw_df.to_markdown(index=False))
+    lines.append(_dataframe_to_markdown(raw_df))
     return "\n".join(lines)
 
 
@@ -135,11 +147,23 @@ def analyze_statistics_mode(
     bin_widths = np.diff(histogram_edges)
     bin_centers = histogram_edges[:-1] + (bin_widths / 2.0)
     y_top = float(np.max(histogram_counts)) * 1.18 if histogram_counts.size else 1.0
+    x_fit = np.array([], dtype=float)
+    y_fit = np.array([], dtype=float)
     if include_normal_fit:
         x_fit, y_fit = normal_curve_points(numeric_values, mean=stats_result.mean, std=stats_result.std)
         y_top = max(y_top, float(np.max(y_fit)) * 1.15)
-    x_min_plot = float(histogram_edges[0])
-    x_max_plot = float(histogram_edges[-1])
+
+    x_candidates = [float(histogram_edges[0]), float(histogram_edges[-1])]
+    if x_fit.size:
+        x_candidates.extend([float(np.min(x_fit)), float(np.max(x_fit))])
+    x_min_raw = float(min(x_candidates))
+    x_max_raw = float(max(x_candidates))
+    x_span = x_max_raw - x_min_raw
+    x_pad = max(1e-12, x_span * 0.05)
+    if x_span <= 0:
+        x_pad = max(1.0, abs(x_min_raw) * 0.05)
+    x_min_plot = x_min_raw - x_pad
+    x_max_plot = x_max_raw + x_pad
 
     fig = go.Figure()
     fig.add_trace(
@@ -236,7 +260,7 @@ def analyze_statistics_mode(
     if config.show_formula_box and include_normal_fit:
         plot_info_lines = [
             translate("statistics.formula_title"),
-            r"f(x) = 1/(\sigma?sqrt(2\pi)) ? exp(-(x-\mu)^2 / (2\sigma^2))",
+            r"f(x) = 1/(\sigma sqrt(2\pi)) \cdot exp(-(x-\mu)^2 / (2\sigma^2))",
             f"\\mu = {stats_result.mean:.6g}",
             f"\\sigma = {stats_result.std:.6g}",
         ]
@@ -244,7 +268,7 @@ def analyze_statistics_mode(
         messages.append(("caption", translate("statistics.summary_fit_unavailable")))
 
     rendered_plot_lines = tuple(to_plot_math_text(line, config.use_math_text) for line in plot_info_lines)
-    place_plot_text_block(fig, list(rendered_plot_lines), font_size=int(config.plot_info_box.font_size), layout=config.plot_info_box.to_layout())
+    plot_info_status = place_plot_text_block(fig, list(rendered_plot_lines), font_size=int(config.plot_info_box.font_size), layout=config.plot_info_box.to_layout())
 
     return StatisticsAnalysisResult(
         numeric_values=tuple(float(v) for v in numeric_values),
@@ -258,7 +282,8 @@ def analyze_statistics_mode(
             plot_info_lines=rendered_plot_lines,
             plot_info_box=config.plot_info_box,
             annotation_font_size=int(config.annotation_font_size),
-            build_export_base_figure=lambda: go.Figure(fig),
+            build_export_base_figure=lambda autoscale=False: autoscale_figure_to_data(fig, np.array([], dtype=float), np.array([], dtype=float), np.array([], dtype=float), "linear") if autoscale else go.Figure(fig),
+            plot_info_status=plot_info_status,
         ),
         messages=tuple(messages),
     )
@@ -335,13 +360,13 @@ def build_normal_analysis_result(
         (float(config.y_range[0]), float(config.y_range[1])) if config.y_range is not None else (float(np.min(y_data)), float(np.max(y_data)))
     )
 
-    x_tick0 = None
-    y_tick0 = None
-    x_major_dtick = None
-    y_major_dtick = None
+    x_tick0: float | None = None
+    y_tick0: float | None = None
+    x_major_dtick: float | None = None
+    y_major_dtick: float | str | None = None
     show_minor_grid = False
-    x_minor_dtick = None
-    y_minor_dtick = None
+    x_minor_dtick: float | None = None
+    y_minor_dtick: float | str | None = None
     if config.show_grid and config.grid_mode in {"manual", "millimetric"}:
         if x_view_max > x_view_min:
             x_tick0 = x_view_min
@@ -392,9 +417,10 @@ def build_normal_analysis_result(
 
     fig = create_base_figure(analysis_df, plot_style)
     try:
-        visible_bounds = visible_x_range(x_data, custom=config.x_range)
+        validated_visible_bounds = visible_x_range(x_data, custom=config.x_range)
     except ValueError as exc:
         raise ValueError(translate("runtime.axis_range_error", error=exc)) from exc
+    visible_bounds = validated_visible_bounds if config.extrapolate_lines else data_x_bounds
 
     horizontal_delta_symbol, vertical_delta_symbol = auto_triangle_delta_symbols(config.x_label, config.y_label)
     fit_triangle_slope: float | None = None
@@ -520,12 +546,12 @@ def build_normal_analysis_result(
 
     if config.show_r2_on_plot and config.show_fit_line:
         r_squared = float(fit_result.r_value**2)
-        plot_info_lines.append(f"R?(ln y) = {r_squared:.6g}" if config.fit_model == "exp" else f"R? = {r_squared:.6g}")
+        plot_info_lines.append(f"R^{{2}}(ln y) = {r_squared:.6g}" if config.fit_model == "exp" else f"R^{{2}} = {r_squared:.6g}")
 
     rendered_plot_info_lines = tuple(to_plot_math_text(line, config.use_math_text) for line in plot_info_lines)
-    place_plot_text_block(fig, list(rendered_plot_info_lines), font_size=int(config.plot_info_box.font_size), layout=config.plot_info_box.to_layout())
+    plot_info_status = place_plot_text_block(fig, list(rendered_plot_info_lines), font_size=int(config.plot_info_box.font_size), layout=config.plot_info_box.to_layout())
 
-    final_slope = None
+    final_slope: str | None = None
     if error_line_result is not None:
         final_slope = format_final_slope(fit_result.k_fit, error_line_result.delta_k)
 
@@ -547,7 +573,16 @@ def build_normal_analysis_result(
             plot_info_lines=rendered_plot_info_lines,
             plot_info_box=config.plot_info_box,
             annotation_font_size=int(config.annotation_font_size),
-            build_export_base_figure=lambda autoscale=False: autoscale_figure_to_data(fig, x_data, y_data, sigma_y_data, config.y_axis_type) if autoscale else go.Figure(fig),
+            build_export_base_figure=lambda autoscale=False: autoscale_figure_to_data(
+                fig,
+                x_data,
+                y_data,
+                sigma_y_data,
+                config.y_axis_type,
+                preserve_x_range=config.x_range is not None,
+                preserve_y_range=config.y_range is not None,
+            ) if autoscale else go.Figure(fig),
+            plot_info_status=plot_info_status,
         ),
         messages=tuple(messages),
     )

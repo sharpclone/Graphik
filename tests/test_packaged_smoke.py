@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import socket
 import subprocess
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 import pytest
-
 
 BUILD_EXE = Path("dist_portable/Graphik/Graphik.exe")
 RUN_PACKAGED_SMOKE = os.environ.get("GRAPHIK_RUN_PACKAGED_SMOKE") == "1"
