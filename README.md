@@ -71,7 +71,7 @@ streamlit run app.py
 
 ## Windows Portable Build
 
-For Windows users, there is also a portable build provided here as a zip. You just download and unarchive it.
+For Windows users, there is also a portable build available in [Releases](https://github.com/sharpclone/Graphik/releases/tag/v0.1.0) as a ZIP. You just download and unarchive it.
 It includes:
 
 - `Graphik.exe`
