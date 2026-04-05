@@ -28,7 +28,7 @@ It is designed for workflows with measurement tables, error bars, fit lines, sub
 ![Graphik dashboard](Present/Dashboard.png)
 
 
-## Standard Install (recommended)
+## Standard Install 
 
 ### Requirements
 - Python 3.11 or newer
