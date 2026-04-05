@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 import ctypes
 import os
 import socket
@@ -13,6 +12,7 @@ import time
 import urllib.error
 import urllib.request
 import webbrowser
+from pathlib import Path
 
 APP_NAME = "Graphik"
 DEFAULT_PORT = 8501
