@@ -183,8 +183,8 @@ def render_normal_controls(
         if fit_model == "exp":
             st.caption(translate("lines.exp_colors_caption"))
             exp_options = ["min", "max", "mean"]
-            exp_default_raw = st.session_state.get(_k("visible_error_lines_exp"), exp_options)
-            exp_default = [item for item in exp_default_raw if item in exp_options] or exp_options
+            exp_default_raw = st.session_state.get(_k("visible_error_lines_exp"), ["max"])
+            exp_default = [item for item in exp_default_raw if item in exp_options] or ["max"]
             visible_error_lines_exp = tuple(st.multiselect(translate("lines.visible_exp_error_lines"), options=exp_options, default=exp_default, key=_k("visible_error_lines_exp"), format_func=lambda item: translate(f"exp_error.{item}")))
         else:
             linear_options = ["k_max", "k_min"]

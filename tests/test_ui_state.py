@@ -13,6 +13,7 @@ from src.ui_state import (
     STATISTICS_MODE,
     clear_session_snapshot,
     reset_corrupted_settings,
+    reset_view_state,
     restore_session_snapshot,
     save_session_snapshot,
 )
@@ -198,3 +199,22 @@ def test_save_session_snapshot_does_not_persist_export_cache_or_live_prefs(tmp_p
     assert "_prefs" not in user_payload["user_prefs"]
     assert "_export_cache_normal_png" not in runtime_payload["runtime_state"]
     assert session_state["_prefs"] == {"temporary": True}
+
+
+def test_reset_view_state_restores_normal_triangle_and_exp_line_defaults() -> None:
+    session_state: dict[str, object] = {
+        "app_mode": NORMAL_MODE,
+        f"{MODE_PREFIXES[NORMAL_MODE]}custom_x_range": True,
+        f"{MODE_PREFIXES[NORMAL_MODE]}custom_y_range": True,
+        f"{MODE_PREFIXES[NORMAL_MODE]}show_fit_triangle": True,
+        f"{MODE_PREFIXES[NORMAL_MODE]}show_error_triangles": True,
+        f"{MODE_PREFIXES[NORMAL_MODE]}visible_error_lines_exp": ["min", "max", "mean"],
+    }
+
+    reset_view_state(session_state)
+
+    assert session_state[f"{MODE_PREFIXES[NORMAL_MODE]}custom_x_range"] is False
+    assert session_state[f"{MODE_PREFIXES[NORMAL_MODE]}custom_y_range"] is False
+    assert session_state[f"{MODE_PREFIXES[NORMAL_MODE]}show_fit_triangle"] is False
+    assert session_state[f"{MODE_PREFIXES[NORMAL_MODE]}show_error_triangles"] is False
+    assert session_state[f"{MODE_PREFIXES[NORMAL_MODE]}visible_error_lines_exp"] == ["max"]

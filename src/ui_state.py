@@ -455,6 +455,7 @@ def reset_view_state(session_state: SessionStateLike) -> None:
         session_state[f"{MODE_PREFIXES[NORMAL_MODE]}custom_y_range"] = False
         session_state[f"{MODE_PREFIXES[NORMAL_MODE]}show_fit_triangle"] = False
         session_state[f"{MODE_PREFIXES[NORMAL_MODE]}show_error_triangles"] = False
+        session_state[f"{MODE_PREFIXES[NORMAL_MODE]}visible_error_lines_exp"] = ["max"]
 
 
 def clear_mode_state(session_state: SessionStateLike, mode: str) -> None:
